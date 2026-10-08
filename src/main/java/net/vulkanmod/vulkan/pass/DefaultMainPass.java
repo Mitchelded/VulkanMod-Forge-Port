@@ -54,6 +54,13 @@ public class DefaultMainPass implements MainPass {
     }
 
     @Override
+    public void cleanUp() {
+        // Not destroyed at all in the Fabric version (validation: VkRenderPass leaked at vkDestroyDevice).
+        this.mainRenderPass.cleanUp();
+        this.auxRenderPass.cleanUp();
+    }
+
+    @Override
     public void begin(VkCommandBuffer commandBuffer, MemoryStack stack) {
         SwapChain framebuffer = Vulkan.getSwapChain();
 

@@ -137,8 +137,20 @@ public class Vulkan {
      * queues, VMA allocator, memory types, command pool, depth format, swapchain, renderer (pipelines, frames).
      * Any failure is reported with a full diagnostic dump and a user-facing explanation.
      */
+    private static void exportValidationLayerPath() {
+        if (Initializer.CONFIG == null || !Initializer.CONFIG.isValidationRequested())
+            return;
+        String path = Initializer.CONFIG.validationLayerPath;
+        if (path == null || path.isBlank())
+            return;
+        // VK_ADD_LAYER_PATH (loader >= 1.3.234) appends; VK_LAYER_PATH covers older loaders.
+        boolean ok = ProcessEnvironment.set("VK_ADD_LAYER_PATH", path) & ProcessEnvironment.set("VK_LAYER_PATH", path);
+        Initializer.LOGGER.info("[VULKAN] Validation layer search path {}: {}", ok ? "set" : "could NOT be set", path);
+    }
+
     public static void initVulkan(long window) {
         try {
+            exportValidationLayerPath();
             VulkanDiagnostics.logLoader();
             createInstance();
             Initializer.LOGGER.info("[VULKAN] Instance created (API 1.2 requested{})",
@@ -202,11 +214,9 @@ public class Vulkan {
 
         freeStagingBuffers();
 
-        try {
-            MemoryManager.getInstance().freeAllBuffers();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        MemoryManager.getInstance().freeAllBuffers();
+        Pipeline.destroyRemainingPipelines();
+        MemoryManager.getInstance().freeLeakedResources();
 
         vmaDestroyAllocator(allocator);
 

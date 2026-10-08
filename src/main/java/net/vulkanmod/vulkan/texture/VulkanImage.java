@@ -375,7 +375,7 @@ public class VulkanImage {
 
         if (this.levelImageViews != null)
             Arrays.stream(this.levelImageViews).forEach(
-                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), this.mainImageView, null));
+                    imageView -> vkDestroyImageView(Vulkan.getVkDevice(), imageView, null)); // Fabric destroyed mainImageView here (double free + leak)
 
         this.id = 0L;
     }

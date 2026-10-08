@@ -67,6 +67,22 @@ public abstract class Pipeline {
         vkDestroyPipelineCache(DEVICE, PIPELINE_CACHE, null);
     }
 
+    /**
+     * Shutdown safety net (device idle): destroys pipelines whose owner never called cleanUp() and logs them.
+     * Minecraft does not close every ShaderInstance/EffectInstance on exit.
+     */
+    public static void destroyRemainingPipelines() {
+        if (PIPELINES.isEmpty())
+            return;
+        List<String> names = new java.util.ArrayList<>();
+        for (Pipeline p : new java.util.ArrayList<>(PIPELINES)) {
+            names.add(p.name);
+            p.cleanUp();
+        }
+        PIPELINES.clear();
+        net.vulkanmod.Initializer.LOGGER.info("[VULKAN] Destroyed {} pipeline(s) not released by their owners: {}", names.size(), names);
+    }
+
     public static void recreateDescriptorSets(int frames) {
         PIPELINES.forEach(pipeline -> {
             pipeline.destroyDescriptorSets();

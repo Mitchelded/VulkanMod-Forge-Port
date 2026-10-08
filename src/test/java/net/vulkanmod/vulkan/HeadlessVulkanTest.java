@@ -53,19 +53,52 @@ class HeadlessVulkanTest {
             assumeTrue(false, "Vulkan loader not available: " + t);
         }
 
+        System.out.println("[VULKAN-TEST] VK_ADD_LAYER_PATH=" + System.getenv("VK_ADD_LAYER_PATH"));
+        validation = VulkanDiagnostics.instanceLayers().contains(Vulkan.VALIDATION_LAYER);
+        System.out.println("[VULKAN-TEST] validation layer " + (validation ? "ENABLED" : "not installed (set VK_ADD_LAYER_PATH)"));
+
         try (MemoryStack stack = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(stack).sType$Default()
                     .pApplicationName(stack.UTF8("VulkanMod headless test"))
                     .apiVersion(VK12.VK_API_VERSION_1_2);
             VkInstanceCreateInfo ci = VkInstanceCreateInfo.calloc(stack).sType$Default().pApplicationInfo(app);
+            VkDebugUtilsMessengerCreateInfoEXT dbg = null;
+            if (validation) {
+                ci.ppEnabledLayerNames(stack.pointers(stack.UTF8(Vulkan.VALIDATION_LAYER)));
+                ci.ppEnabledExtensionNames(stack.pointers(stack.UTF8(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)));
+                dbg = VkDebugUtilsMessengerCreateInfoEXT.calloc(stack).sType$Default()
+                        .messageSeverity(EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                                | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+                        .messageType(EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+                                | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                                | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+                        .pfnUserCallback((severity, type, pData, user) -> {
+                            String msg = VkDebugUtilsMessengerCallbackDataEXT.create(pData).pMessageString();
+                            System.out.println("[VULKAN-VALIDATION] " + msg);
+                            if ((severity & EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
+                                VALIDATION_ERRORS.add(msg);
+                            return VK_FALSE;
+                        });
+                ci.pNext(dbg.address()); // covers vkCreateInstance/vkDestroyInstance too
+            }
             PointerBuffer p = stack.mallocPointer(1);
             int r = vkCreateInstance(ci, null, p);
             assumeTrue(r == VK_SUCCESS, "vkCreateInstance failed: " + r);
             // Exercises the patched-at-runtime code path too: LWJGL's VkInstance constructor enumerates every
             // device's extensions (this is what overflowed the 64 KiB MemoryStack on RTX 50-series in-game).
             instance = new VkInstance(p.get(0), ci);
+
+            if (validation) {
+                LongBuffer pMessenger = stack.mallocLong(1);
+                assertEquals(VK_SUCCESS, EXTDebugUtils.vkCreateDebugUtilsMessengerEXT(instance, dbg, null, pMessenger));
+                messenger = pMessenger.get(0);
+            }
         }
     }
+
+    private static boolean validation;
+    private static long messenger;
+    private static final List<String> VALIDATION_ERRORS = java.util.Collections.synchronizedList(new ArrayList<>());
 
     @AfterAll
     static void tearDown() {
@@ -73,8 +106,12 @@ class HeadlessVulkanTest {
             vmaDestroyAllocator(allocator);
         if (device != null)
             vkDestroyDevice(device, null);
+        if (messenger != 0)
+            EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
         if (instance != null)
             vkDestroyInstance(instance, null);
+        // With the Khronos layer present this also checks resource lifetime (leaked objects at vkDestroyDevice).
+        assertTrue(VALIDATION_ERRORS.isEmpty(), "validation errors: " + VALIDATION_ERRORS);
     }
 
     private static List<VkPhysicalDevice> physicalDevices() {

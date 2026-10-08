@@ -22,4 +22,7 @@ public interface MainPass {
     default int getColorAttachmentGlId() {
         return -1;
     }
+
+    /** Destroys the Vulkan objects owned by the pass (render passes). Called once at shutdown. */
+    default void cleanUp() {}
 }

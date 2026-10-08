@@ -156,7 +156,10 @@ public class Renderer {
 
     private void createSyncObjects() {
         imageAvailableSemaphores = new ArrayList<>(framesNum);
-        renderFinishedSemaphores = new ArrayList<>(framesNum);
+        // One per swapchain image, not per frame in flight: the presentation engine holds the semaphore until the
+        // image is re-acquired, so with images != frames-in-flight a per-frame semaphore could be re-signalled while
+        // still in use (VUID-vkQueueSubmit-pSignalSemaphores-00067, reported by the validation layer).
+        renderFinishedSemaphores = new ArrayList<>(imagesNum);
         inFlightFences = new ArrayList<>(framesNum);
 
         try (MemoryStack stack = stackPush()) {
@@ -175,16 +178,19 @@ public class Renderer {
             for (int i = 0; i < framesNum; i++) {
 
                 if (vkCreateSemaphore(device, semaphoreInfo, null, pImageAvailableSemaphore) != VK_SUCCESS
-                        || vkCreateSemaphore(device, semaphoreInfo, null, pRenderFinishedSemaphore) != VK_SUCCESS
                         || vkCreateFence(device, fenceInfo, null, pFence) != VK_SUCCESS) {
 
                     throw new RuntimeException("Failed to create synchronization objects for the frame: " + i);
                 }
 
                 imageAvailableSemaphores.add(pImageAvailableSemaphore.get(0));
-                renderFinishedSemaphores.add(pRenderFinishedSemaphore.get(0));
                 inFlightFences.add(pFence.get(0));
+            }
 
+            for (int i = 0; i < imagesNum; i++) {
+                if (vkCreateSemaphore(device, semaphoreInfo, null, pRenderFinishedSemaphore) != VK_SUCCESS)
+                    throw new RuntimeException("Failed to create present semaphore for swapchain image: " + i);
+                renderFinishedSemaphores.add(pRenderFinishedSemaphore.get(0));
             }
 
         }
@@ -296,7 +302,7 @@ public class Renderer {
             submitInfo.pWaitSemaphores(stack.longs(imageAvailableSemaphores.get(currentFrame)));
             submitInfo.pWaitDstStageMask(stack.ints(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT));
 
-            submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(currentFrame)));
+            submitInfo.pSignalSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
 
             submitInfo.pCommandBuffers(stack.pointers(currentCmdBuffer));
 
@@ -312,7 +318,7 @@ public class Renderer {
             VkPresentInfoKHR presentInfo = VkPresentInfoKHR.calloc(stack);
             presentInfo.sType(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
 
-            presentInfo.pWaitSemaphores(stack.longs(renderFinishedSemaphores.get(currentFrame)));
+            presentInfo.pWaitSemaphores(stack.longs(renderFinishedSemaphores.get(imageIndex)));
 
             presentInfo.swapchainCount(1);
             presentInfo.pSwapchains(stack.longs(Vulkan.getSwapChain().getId()));
@@ -464,6 +470,8 @@ public class Renderer {
     public void cleanUpResources() {
         destroySyncObjects();
 
+        mainPass.cleanUp();
+
         drawer.cleanUpResources();
 
         PipelineManager.destroyPipelines();
@@ -471,11 +479,12 @@ public class Renderer {
     }
 
     private void destroySyncObjects() {
-        for (int i = 0; i < framesNum; ++i) {
+        for (int i = 0; i < inFlightFences.size(); ++i) {
             vkDestroyFence(device, inFlightFences.get(i), null);
             vkDestroySemaphore(device, imageAvailableSemaphores.get(i), null);
-            vkDestroySemaphore(device, renderFinishedSemaphores.get(i), null);
         }
+        for (long semaphore : renderFinishedSemaphores)
+            vkDestroySemaphore(device, semaphore, null);
     }
 
     public void setBoundFramebuffer(Framebuffer framebuffer) {

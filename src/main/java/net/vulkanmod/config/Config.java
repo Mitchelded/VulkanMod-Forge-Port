@@ -49,6 +49,13 @@ public class Config {
      */
     public boolean validation = false;
 
+    /**
+     * Development only: a folder containing {@code VkLayer_khronos_validation.json} (+ dll/so) to use when the Vulkan
+     * SDK is not installed. Added to the loader search path ({@code VK_ADD_LAYER_PATH}) in-process before the instance
+     * is created. Ignored by the Vulkan loader for elevated (administrator) processes. Empty = SDK/registry layers only.
+     */
+    public String validationLayerPath = "";
+
     private static Path CONFIG_PATH;
 
     private static final Gson GSON = new GsonBuilder()

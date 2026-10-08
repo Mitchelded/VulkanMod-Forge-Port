@@ -80,7 +80,11 @@ public class MemoryManager {
 
     /** Shutdown path (device idle): run every pending frame op and free every pending buffer and image. */
     public synchronized void freeAllBuffers() {
-        this.frameOps.drainAll(Runnable::run);
+        // Frame ops may defer further ops (e.g. ShaderInstance.close -> pipeline.cleanUp); run until none are left.
+        for (int pass = 0; pass < 8 && this.frameOps.pending() > 0; pass++)
+            this.frameOps.drainAll(Runnable::run);
+        if (this.frameOps.pending() > 0)
+            Initializer.LOGGER.warn("[VULKAN] {} frame ops still pending after shutdown drain", this.frameOps.pending());
         this.freeableBuffers.drainAll(info -> freeBuffer(info));
         // Fabric only freed the images of the *current* slot here, leaking images queued in the other slots.
         this.freeableImages.drainAll(VulkanImage::doFree);
@@ -185,6 +189,31 @@ public class MemoryManager {
         vmaMapMemory(ALLOCATOR, allocation, data);
 
         return data;
+    }
+
+    /**
+     * Shutdown safety net (device must be idle): reports every buffer/image that no owner released and frees it, so
+     * that vkDestroyDevice finds no live objects. Owners should release their resources; this logs what they missed.
+     */
+    public synchronized void freeLeakedResources() {
+        if (!buffers.isEmpty()) {
+            java.util.Map<String, long[]> byClass = new java.util.TreeMap<>();
+            for (Buffer b : buffers.values()) {
+                long[] acc = byClass.computeIfAbsent(b.getClass().getSimpleName(), k -> new long[2]);
+                acc[0]++;
+                acc[1] += b.getBufferSize();
+            }
+            StringBuilder sb = new StringBuilder();
+            byClass.forEach((k, v) -> sb.append(k).append(" x").append(v[0]).append(" (").append(v[1] >> 10).append(" KiB) "));
+            Initializer.LOGGER.info("[VULKAN] Releasing {} buffer(s) still alive at shutdown: {}", buffers.size(), sb.toString().trim());
+            for (Buffer b : new java.util.ArrayList<>(buffers.values()))
+                freeBuffer(b.getBufferInfo());
+        }
+        if (!images.isEmpty()) {
+            Initializer.LOGGER.info("[VULKAN] Releasing {} image(s) still alive at shutdown", images.size());
+            for (VulkanImage image : new java.util.ArrayList<>(images.values()))
+                image.doFree();
+        }
     }
 
     public static void freeBuffer(long buffer, long allocation) {
