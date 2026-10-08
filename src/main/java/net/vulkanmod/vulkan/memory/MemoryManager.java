@@ -43,14 +43,11 @@ public class MemoryManager {
 
     private int currentFrame = 0;
 
-    private ObjectArrayList<Buffer.BufferInfo>[] freeableBuffers = new ObjectArrayList[Frames];
-    private ObjectArrayList<VulkanImage>[] freeableImages = new ObjectArrayList[Frames];
-
-    private ObjectArrayList<Runnable>[] frameOps = new ObjectArrayList[Frames];
-    private ObjectArrayList<Pair<AreaBuffer, Integer>>[] segmentsToFree = new ObjectArrayList[Frames];
-
-    //debug
-    private ObjectArrayList<StackTraceElement[]>[] stackTraces;
+    // Deferred destruction per frame slot (see FrameDeferredQueue for the lifetime rule).
+    private final FrameDeferredQueue<Buffer.BufferInfo> freeableBuffers = new FrameDeferredQueue<>(Frames);
+    private final FrameDeferredQueue<VulkanImage> freeableImages = new FrameDeferredQueue<>(Frames);
+    private final FrameDeferredQueue<Runnable> frameOps = new FrameDeferredQueue<>(Frames);
+    private final FrameDeferredQueue<Pair<AreaBuffer, Integer>> segmentsToFree = new FrameDeferredQueue<>(Frames);
 
     public static MemoryManager getInstance() {
         return INSTANCE;
@@ -63,20 +60,6 @@ public class MemoryManager {
     }
 
     MemoryManager() {
-        for (int i = 0; i < Frames; ++i) {
-            this.freeableBuffers[i] = new ObjectArrayList<>();
-            this.freeableImages[i] = new ObjectArrayList<>();
-
-            this.frameOps[i] = new ObjectArrayList<>();
-            this.segmentsToFree[i] = new ObjectArrayList<>();
-        }
-
-        if (DEBUG) {
-            this.stackTraces = new ObjectArrayList[Frames];
-            for (int i = 0; i < Frames; ++i) {
-                this.stackTraces[i] = new ObjectArrayList<>();
-            }
-        }
     }
 
     public synchronized void initFrame(int frame) {
@@ -89,13 +72,18 @@ public class MemoryManager {
     public void setCurrentFrame(int frame) {
         Validate.isTrue(frame < Frames, "Out of bounds frame index");
         this.currentFrame = frame;
+        this.freeableBuffers.setCurrentSlot(frame);
+        this.freeableImages.setCurrentSlot(frame);
+        this.frameOps.setCurrentSlot(frame);
+        this.segmentsToFree.setCurrentSlot(frame);
     }
 
-    public void freeAllBuffers() {
-        for (int frame = 0; frame < Frames; ++frame) {
-            this.freeBuffers(frame);
-            this.doFrameOps(frame);
-        }
+    /** Shutdown path (device idle): run every pending frame op and free every pending buffer and image. */
+    public synchronized void freeAllBuffers() {
+        this.frameOps.drainAll(Runnable::run);
+        this.freeableBuffers.drainAll(info -> freeBuffer(info));
+        // Fabric only freed the images of the *current* slot here, leaking images queued in the other slots.
+        this.freeableImages.drainAll(VulkanImage::doFree);
 
 //        buffers.values().forEach(buffer -> freeBuffer(buffer.getId(), buffer.getAllocation()));
 //        images.values().forEach(image -> image.doFree(this));
@@ -228,51 +216,24 @@ public class MemoryManager {
 
         checkBuffer(bufferInfo);
 
-        freeableBuffers[currentFrame].add(bufferInfo);
-
-        if (DEBUG)
-            stackTraces[currentFrame].add(new Throwable().getStackTrace());
+        freeableBuffers.defer(bufferInfo);
     }
 
     public synchronized void addToFreeable(VulkanImage image) {
-        freeableImages[currentFrame].add(image);
+        freeableImages.defer(image);
     }
 
     public synchronized void addFrameOp(Runnable runnable) {
-        this.frameOps[currentFrame].add(runnable);
+        this.frameOps.defer(runnable);
     }
 
-    public void doFrameOps(int frame) {
-        for (Runnable runnable : this.frameOps[frame]) {
-            runnable.run();
-        }
-
-        this.frameOps[frame].clear();
+    public synchronized void doFrameOps(int frame) {
+        this.frameOps.drain(frame, Runnable::run);
     }
 
     private void freeBuffers(int frame) {
-        List<Buffer.BufferInfo> bufferList = freeableBuffers[frame];
-        for (Buffer.BufferInfo bufferInfo : bufferList) {
-
-            freeBuffer(bufferInfo);
-        }
-
-        bufferList.clear();
-
-        if (DEBUG)
-            stackTraces[frame].clear();
-
-        this.freeImages();
-    }
-
-    private void freeImages() {
-        List<VulkanImage> bufferList = freeableImages[currentFrame];
-        for (VulkanImage image : bufferList) {
-
-            image.doFree();
-        }
-
-        bufferList.clear();
+        freeableBuffers.drain(frame, info -> freeBuffer(info));
+        freeableImages.drain(frame, VulkanImage::doFree);
     }
 
     private void checkBuffer(Buffer.BufferInfo bufferInfo) {
@@ -282,16 +243,11 @@ public class MemoryManager {
     }
 
     private void freeSegments(int frame) {
-        var list = this.segmentsToFree[frame];
-        for (var pair : list) {
-            pair.first.setSegmentFree(pair.second);
-        }
-
-        list.clear();
+        this.segmentsToFree.drain(frame, pair -> pair.first.setSegmentFree(pair.second));
     }
 
-    public void addToFreeSegment(AreaBuffer areaBuffer, int offset) {
-        this.segmentsToFree[this.currentFrame].add(new Pair<>(areaBuffer, offset));
+    public synchronized void addToFreeSegment(AreaBuffer areaBuffer, int offset) {
+        this.segmentsToFree.defer(new Pair<>(areaBuffer, offset));
     }
 
     public int getNativeMemoryMB() {

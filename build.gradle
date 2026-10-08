@@ -83,6 +83,10 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // Mixins are not applied in unit tests, so LWJGL 3.3.1's VkInstance constructor runs unpatched. With modern
+    // drivers (e.g. NVIDIA 617 / RTX 5070: 291 device extensions) it overflows the default 64 KiB MemoryStack;
+    // in game VkInstanceM fixes this. Give the test JVM a larger LWJGL stack instead.
+    systemProperty 'org.lwjgl.system.stackSize', '1024'
     testLogging {
         events 'passed', 'skipped', 'failed'
         exceptionFormat 'full'
