@@ -2,6 +2,9 @@ package net.vulkanmod.vulkan.device;
 
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.vulkanmod.Initializer;
+import net.vulkanmod.vulkan.VulkanDiagnostics;
+import net.vulkanmod.vulkan.select.GpuSelector;
+import net.vulkanmod.vulkan.select.SelectionException;
 import net.vulkanmod.vulkan.VRenderSystem;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.queue.*;
@@ -46,13 +49,13 @@ public abstract class DeviceManager {
     public static void init(VkInstance instance) {
         try {
             DeviceManager.getSuitableDevices(instance);
+            VulkanDiagnostics.logDevices(availableDevices, suitableDevices);
             DeviceManager.pickPhysicalDevice();
             DeviceManager.createLogicalDevice();
-        } catch (Exception e) {
+            VulkanDiagnostics.logQueues(Queue.getQueueFamilies());
+        } catch (RuntimeException e) {
             logUnsupportedExtensions();
-
-            e.printStackTrace();
-            throw new RuntimeException();
+            throw e;
         }
     }
 
@@ -101,12 +104,14 @@ public abstract class DeviceManager {
         try (MemoryStack stack = stackPush()) {
 
             int deviceIdx = Initializer.CONFIG.device;
-            if (deviceIdx >= 0 && deviceIdx < suitableDevices.size())
+            boolean fromConfig = deviceIdx >= 0 && deviceIdx < suitableDevices.size();
+            if (fromConfig)
                 DeviceManager.device = suitableDevices.get(deviceIdx);
             else {
                 DeviceManager.device = autoPickDevice();
                 Initializer.CONFIG.device = -1;
             }
+            VulkanDiagnostics.logSelectedDevice(DeviceManager.device, fromConfig);
 
             physicalDevice = DeviceManager.device.physicalDevice;
 
@@ -120,37 +125,12 @@ public abstract class DeviceManager {
         }
     }
 
+    /** Delegates the policy to {@link GpuSelector} (pure, unit tested). */
     static Device autoPickDevice() {
-        ArrayList<Device> integratedGPUs = new ArrayList<>();
-        ArrayList<Device> otherDevices = new ArrayList<>();
-
-        boolean flag = false;
-
-        Device currentDevice = null;
-        for (Device device : suitableDevices) {
-            currentDevice = device;
-
-            int deviceType = device.properties.deviceType();
-            if (deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-                flag = true;
-                break;
-            } else if (deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
-                integratedGPUs.add(device);
-            else
-                otherDevices.add(device);
-        }
-
-        if (!flag) {
-            if (!integratedGPUs.isEmpty())
-                currentDevice = integratedGPUs.get(0);
-            else if (!otherDevices.isEmpty())
-                currentDevice = otherDevices.get(0);
-            else {
-                throw new IllegalStateException("Failed to find a suitable GPU");
-            }
-        }
-
-        return currentDevice;
+        List<GpuSelector.Candidate> candidates = new ArrayList<>(suitableDevices.size());
+        for (Device d : suitableDevices)
+            candidates.add(new GpuSelector.Candidate(d.deviceName, d.properties.deviceType()));
+        return suitableDevices.get(GpuSelector.choose(candidates, -1).index());
     }
 
     public static void createLogicalDevice() {
@@ -252,7 +232,13 @@ public abstract class DeviceManager {
 
     private static boolean isDeviceSuitable(VkPhysicalDevice device) {
         try (MemoryStack stack = stackPush()) {
-            Queue.QueueFamilyIndices indices = findQueueFamilies(device);
+            Queue.QueueFamilyIndices indices;
+            try {
+                indices = findQueueFamilies(device);
+            } catch (SelectionException e) {
+                Initializer.LOGGER.info("[VULKAN] Device 0x{} not suitable: {}", Long.toHexString(device.address()), e.getMessage());
+                return false;
+            }
 
             boolean extensionsSupported = DeviceExtensions.enumerate(device).containsAll(Vulkan.REQUIRED_EXTENSION);
 

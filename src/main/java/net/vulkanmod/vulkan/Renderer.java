@@ -321,6 +321,10 @@ public class Renderer {
 
             vkResult = vkQueuePresentKHR(DeviceManager.getPresentQueue().queue(), presentInfo);
 
+            // VK_SUBOPTIMAL_KHR still means the image was presented.
+            if (vkResult == VK_SUCCESS || vkResult == VK_SUBOPTIMAL_KHR)
+                VulkanDiagnostics.onFrameSubmitted();
+
             if (vkResult == VK_ERROR_OUT_OF_DATE_KHR || vkResult == VK_SUBOPTIMAL_KHR || swapChainUpdate) {
                 swapChainUpdate = true;
                 return;

@@ -10,7 +10,12 @@ import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkQueueFamilyProperties;
 
+import net.vulkanmod.vulkan.select.QueueFamilySelector;
+import net.vulkanmod.vulkan.select.SelectionException;
+
 import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.IntStream;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
@@ -75,105 +80,35 @@ public abstract class Queue {
         return queueFamilyIndices;
     }
 
+    /**
+     * Queries the device's queue families and the surface present support, then delegates the policy to
+     * {@link QueueFamilySelector} (pure, unit tested).
+     *
+     * @throws SelectionException if the device lacks a graphics, present or compute capable family
+     */
     public static QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
-
-        QueueFamilyIndices indices = new QueueFamilyIndices();
-
         try (MemoryStack stack = stackPush()) {
-
             IntBuffer queueFamilyCount = stack.ints(0);
-
             vkGetPhysicalDeviceQueueFamilyProperties(device, queueFamilyCount, null);
 
-            VkQueueFamilyProperties.Buffer queueFamilies = VkQueueFamilyProperties.mallocStack(queueFamilyCount.get(0), stack);
-
+            VkQueueFamilyProperties.Buffer queueFamilies = VkQueueFamilyProperties.malloc(queueFamilyCount.get(0), stack);
             vkGetPhysicalDeviceQueueFamilyProperties(device, queueFamilyCount, queueFamilies);
 
             IntBuffer presentSupport = stack.ints(VK_FALSE);
-
+            List<QueueFamilySelector.Family> families = new ArrayList<>(queueFamilies.capacity());
             for (int i = 0; i < queueFamilies.capacity(); i++) {
-                int queueFlags = queueFamilies.get(i).queueFlags();
-
-                if ((queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
-                    indices.graphicsFamily = i;
-
-                    vkGetPhysicalDeviceSurfaceSupportKHR(device, i, Vulkan.getSurface(), presentSupport);
-
-                    if (presentSupport.get(0) == VK_TRUE) {
-                        indices.presentFamily = i;
-                    }
-                } else if ((queueFlags & (VK_QUEUE_GRAPHICS_BIT)) == 0
-                        && (queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
-                    indices.computeFamily = i;
-                } else if ((queueFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) == 0
-                        && (queueFlags & VK_QUEUE_TRANSFER_BIT) != 0) {
-                    indices.transferFamily = i;
-                }
-
-                if (indices.presentFamily == -1) {
-                    vkGetPhysicalDeviceSurfaceSupportKHR(device, i, Vulkan.getSurface(), presentSupport);
-
-                    if (presentSupport.get(0) == VK_TRUE) {
-                        indices.presentFamily = i;
-                    }
-                }
-
-                if (indices.isComplete())
-                    break;
+                vkGetPhysicalDeviceSurfaceSupportKHR(device, i, Vulkan.getSurface(), presentSupport);
+                families.add(new QueueFamilySelector.Family(queueFamilies.get(i).queueFlags(),
+                        queueFamilies.get(i).queueCount(), presentSupport.get(0) == VK_TRUE));
             }
 
-            if (indices.presentFamily == -1) {
-                // Some drivers will not show present support even if some queue supports it
-                // Use compute queue as fallback
+            QueueFamilySelector.Selection selection = QueueFamilySelector.select(families);
 
-                indices.presentFamily = indices.computeFamily;
-                Initializer.LOGGER.warn("Using compute queue as present fallback");
-            }
-
-            if (indices.transferFamily == -1) {
-
-                int fallback = -1;
-                for (int i = 0; i < queueFamilies.capacity(); i++) {
-                    int queueFlags = queueFamilies.get(i).queueFlags();
-
-                    if ((queueFlags & VK_QUEUE_TRANSFER_BIT) != 0) {
-                        if (fallback == -1)
-                            fallback = i;
-
-                        if ((queueFlags & (VK_QUEUE_GRAPHICS_BIT)) == 0) {
-                            indices.transferFamily = i;
-
-                            if (i != indices.computeFamily)
-                                break;
-                            fallback = i;
-                        }
-                    }
-
-                    if (fallback == -1)
-                        throw new RuntimeException("Failed to find queue family with transfer support");
-
-                    indices.transferFamily = fallback;
-                }
-            }
-
-            if (indices.computeFamily == -1) {
-                for (int i = 0; i < queueFamilies.capacity(); i++) {
-                    int queueFlags = queueFamilies.get(i).queueFlags();
-
-                    if ((queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
-                        indices.computeFamily = i;
-                        break;
-                    }
-                }
-            }
-
-            if (indices.graphicsFamily == VK_QUEUE_FAMILY_IGNORED)
-                throw new RuntimeException("Unable to find queue family with graphics support.");
-            if (indices.presentFamily == VK_QUEUE_FAMILY_IGNORED)
-                throw new RuntimeException("Unable to find queue family with present support.");
-            if (indices.computeFamily == VK_QUEUE_FAMILY_IGNORED)
-                throw new RuntimeException("Unable to find queue family with compute support.");
-
+            QueueFamilyIndices indices = new QueueFamilyIndices();
+            indices.graphicsFamily = selection.graphics();
+            indices.presentFamily = selection.present();
+            indices.computeFamily = selection.compute();
+            indices.transferFamily = selection.transfer();
             return indices;
         }
     }

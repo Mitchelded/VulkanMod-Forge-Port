@@ -1,6 +1,8 @@
 package net.vulkanmod.vulkan.memory;
 
+import net.vulkanmod.Initializer;
 import net.vulkanmod.vulkan.Vulkan;
+import net.vulkanmod.vulkan.select.MemoryTypeSelector;
 import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.util.VUtil;
 import org.lwjgl.vulkan.VkMemoryHeap;
@@ -14,46 +16,32 @@ public class MemoryTypes {
     public static MemoryType GPU_MEM;
     public static MemoryType HOST_MEM;
 
+    /** Delegates the policy to {@link MemoryTypeSelector} (pure, unit tested). */
     public static void createMemoryTypes() {
+        int count = DeviceManager.memoryProperties.memoryTypeCount();
+        int[] flags = new int[count];
+        for (int i = 0; i < count; ++i)
+            flags[i] = DeviceManager.memoryProperties.memoryTypes(i).propertyFlags();
 
-        for (int i = 0; i < DeviceManager.memoryProperties.memoryTypeCount(); ++i) {
-            VkMemoryType memoryType = DeviceManager.memoryProperties.memoryTypes(i);
-            VkMemoryHeap heap = DeviceManager.memoryProperties.memoryHeaps(memoryType.heapIndex());
+        MemoryTypeSelector.Selection selection = MemoryTypeSelector.select(flags);
 
-            //GPU only Memory
-            if (memoryType.propertyFlags() == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
-                GPU_MEM = new DeviceLocalMemory(memoryType, heap);
+        VkMemoryType hostType = DeviceManager.memoryProperties.memoryTypes(selection.hostType());
+        VkMemoryHeap hostHeap = DeviceManager.memoryProperties.memoryHeaps(hostType.heapIndex());
+        HOST_MEM = switch (selection.hostKind()) {
+            case CACHED -> new HostLocalCachedMemory(hostType, hostHeap);
+            case COHERENT -> new HostLocalFallbackMemory(hostType, hostHeap);
+        };
 
-            }
+        VkMemoryType gpuType = DeviceManager.memoryProperties.memoryTypes(selection.gpuType());
+        VkMemoryHeap gpuHeap = DeviceManager.memoryProperties.memoryHeaps(gpuType.heapIndex());
+        GPU_MEM = switch (selection.gpuKind()) {
+            case DEVICE_LOCAL -> new DeviceLocalMemory(gpuType, gpuHeap);
+            case DEVICE_MAPPABLE -> new DeviceMappableMemory(gpuType, gpuHeap);
+            case HOST_FALLBACK -> HOST_MEM;
+        };
 
-            if (memoryType.propertyFlags() == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) {
-                HOST_MEM = new HostLocalCachedMemory(memoryType, heap);
-            }
-        }
-
-        if (GPU_MEM != null && HOST_MEM != null)
-            return;
-
-        // Could not find 1 or more MemoryTypes, need to use fallback
-        for (int i = 0; i < DeviceManager.memoryProperties.memoryTypeCount(); ++i) {
-            VkMemoryType memoryType = DeviceManager.memoryProperties.memoryTypes(i);
-            VkMemoryHeap heap = DeviceManager.memoryProperties.memoryHeaps(memoryType.heapIndex());
-
-            // GPU mappable memory
-            if ((memoryType.propertyFlags() & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) == (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-                GPU_MEM = new DeviceMappableMemory(memoryType, heap);
-            }
-
-            if ((memoryType.propertyFlags() & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                HOST_MEM = new HostLocalFallbackMemory(memoryType, heap);
-            }
-
-            if (GPU_MEM != null && HOST_MEM != null)
-                return;
-        }
-
-        // Could not find device memory, fallback to host memory
-        GPU_MEM = HOST_MEM;
+        Initializer.LOGGER.info("[VULKAN] Memory types: GPU = type {} ({}, heap {} MiB), HOST = type {} ({})",
+                selection.gpuType(), selection.gpuKind(), gpuHeap.size() >> 20, selection.hostType(), selection.hostKind());
     }
 
     public static class DeviceLocalMemory extends MemoryType {

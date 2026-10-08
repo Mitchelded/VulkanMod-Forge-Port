@@ -1,5 +1,7 @@
 package net.vulkanmod.vulkan;
 
+import net.vulkanmod.Initializer;
+
 import net.vulkanmod.vulkan.device.Device;
 import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.framebuffer.SwapChain;
@@ -39,25 +41,18 @@ import static org.lwjgl.vulkan.VK12.VK_API_VERSION_1_2;
 
 public class Vulkan {
 
-    public static final boolean ENABLE_VALIDATION_LAYERS = false;
-//    public static final boolean ENABLE_VALIDATION_LAYERS = true;
+    /**
+     * Whether the Khronos validation layer is active. Decided at instance creation from the VulkanMod config
+     * ({@code "validation": true}) or {@code -Dvulkan.validation=true}; silently stays off (with a warning) when the
+     * layer is not installed, so release builds never depend on the Vulkan SDK.
+     */
+    public static boolean ENABLE_VALIDATION_LAYERS = false;
+    public static final String VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
 
     //    public static final boolean DYNAMIC_RENDERING = true;
     public static final boolean DYNAMIC_RENDERING = false;
 
-    public static final Set<String> VALIDATION_LAYERS;
-
-    static {
-        if (ENABLE_VALIDATION_LAYERS) {
-            VALIDATION_LAYERS = new HashSet<>();
-            VALIDATION_LAYERS.add("VK_LAYER_KHRONOS_validation");
-//            VALIDATION_LAYERS.add("VK_LAYER_KHRONOS_synchronization2");
-
-        } else {
-            // We are not going to use it, so we don't create it
-            VALIDATION_LAYERS = null;
-        }
-    }
+    public static final Set<String> VALIDATION_LAYERS = Set.of(VALIDATION_LAYER);
 
     public static final Set<String> REQUIRED_EXTENSION = getRequiredExtensionSet();
 
@@ -74,21 +69,17 @@ public class Vulkan {
     private static int debugCallback(int messageSeverity, int messageType, long pCallbackData, long pUserData) {
 
         VkDebugUtilsMessengerCallbackDataEXT callbackData = VkDebugUtilsMessengerCallbackDataEXT.create(pCallbackData);
+        String message = callbackData.pMessageString();
 
-        String s;
+        // Routed to the game log (Fabric printed to stderr, which Forge does not capture in latest.log).
         if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-            s = "\u001B[31m" + callbackData.pMessageString();
-
-//            System.err.println("Stack dump:");
-//            Thread.dumpStack();
+            VALIDATION_ERRORS.incrementAndGet();
+            Initializer.LOGGER.error("[VULKAN-VALIDATION] {}", message);
+        } else if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+            Initializer.LOGGER.warn("[VULKAN-VALIDATION] {}", message);
         } else {
-            s = callbackData.pMessageString();
+            Initializer.LOGGER.info("[VULKAN-VALIDATION] {}", message);
         }
-
-        System.err.println(s);
-
-        if ((messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
-            System.nanoTime();
 
         return VK_FALSE;
     }
@@ -138,23 +129,41 @@ public class Vulkan {
     public static boolean use24BitsDepthFormat = true;
     private static int DEFAULT_DEPTH_FORMAT = 0;
 
+    /** Number of validation-layer errors reported so far (0 when validation is off). */
+    public static final java.util.concurrent.atomic.AtomicInteger VALIDATION_ERRORS = new java.util.concurrent.atomic.AtomicInteger();
+
+    /**
+     * Brings up the whole Vulkan stack, in order: instance, debug messenger, surface, physical + logical device and
+     * queues, VMA allocator, memory types, command pool, depth format, swapchain, renderer (pipelines, frames).
+     * Any failure is reported with a full diagnostic dump and a user-facing explanation.
+     */
     public static void initVulkan(long window) {
-        createInstance();
-        setupDebugMessenger();
-        createSurface(window);
+        try {
+            VulkanDiagnostics.logLoader();
+            createInstance();
+            Initializer.LOGGER.info("[VULKAN] Instance created (API 1.2 requested{})",
+                    ENABLE_VALIDATION_LAYERS ? ", validation layer ON" : "");
+            setupDebugMessenger();
+            createSurface(window);
+            Initializer.LOGGER.info("[VULKAN] Window surface created");
 
-        DeviceManager.init(instance);
+            DeviceManager.init(instance);
+            Initializer.LOGGER.info("[VULKAN] Logical device created");
 
-        createVma();
-        MemoryTypes.createMemoryTypes();
+            createVma();
+            MemoryTypes.createMemoryTypes();
 
-        createCommandPool();
-        allocateImmediateCmdBuffer();
+            createCommandPool();
+            allocateImmediateCmdBuffer();
 
-        setupDepthFormat();
-        createSwapChain();
-        Renderer.initRenderer();
-
+            setupDepthFormat();
+            createSwapChain();
+            Renderer.initRenderer();
+            Initializer.LOGGER.info("[VULKAN] Renderer initialized ({} frames in flight)", Renderer.getFramesNum());
+        } catch (Throwable t) {
+            VulkanDiagnostics.dumpOnFailure(t);
+            throw new VulkanInitException(t);
+        }
     }
 
     static void createStagingBuffers() {
@@ -205,6 +214,8 @@ public class Vulkan {
         destroyDebugUtilsMessengerEXT(instance, debugMessenger, null);
         KHRSurface.vkDestroySurfaceKHR(instance, surface, null);
         vkDestroyInstance(instance, null);
+        Initializer.LOGGER.info("[VULKAN] Cleanup complete: device, surface and instance destroyed ({} frames rendered, {} validation errors)",
+                VulkanDiagnostics.framesRendered(), VALIDATION_ERRORS.get());
     }
 
     private static void freeStagingBuffers() {
@@ -213,8 +224,14 @@ public class Vulkan {
 
     private static void createInstance() {
 
-        if (ENABLE_VALIDATION_LAYERS && !checkValidationLayerSupport()) {
-            throw new RuntimeException("Validation requested but not supported");
+        ENABLE_VALIDATION_LAYERS = false;
+        if (Initializer.CONFIG != null && Initializer.CONFIG.isValidationRequested()) {
+            if (checkValidationLayerSupport()) {
+                ENABLE_VALIDATION_LAYERS = true;
+            } else {
+                Initializer.LOGGER.warn("[VULKAN] Validation requested but {} is not installed (install the Vulkan SDK); continuing without it",
+                        VALIDATION_LAYER);
+            }
         }
 
         try (MemoryStack stack = stackPush()) {
@@ -279,6 +296,7 @@ public class Vulkan {
         debugCreateInfo.sType(VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT);
 //        debugCreateInfo.messageSeverity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT);
         debugCreateInfo.messageSeverity(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
+        // Synchronization / descriptor / lifetime errors are all reported as VALIDATION_BIT messages.
         debugCreateInfo.messageType(VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT);
 //        debugCreateInfo.messageType(VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT);
         debugCreateInfo.pfnUserCallback(Vulkan::debugCallback);
@@ -416,6 +434,9 @@ public class Vulkan {
     private static PointerBuffer getRequiredInstanceExtensions() {
 
         PointerBuffer glfwExtensions = glfwGetRequiredInstanceExtensions();
+        if (glfwExtensions == null)
+            throw new IllegalStateException("GLFW reports that Vulkan is not available on this system "
+                    + "(no Vulkan loader or no Vulkan-capable driver for this display)");
 
         if (ENABLE_VALIDATION_LAYERS) {
 

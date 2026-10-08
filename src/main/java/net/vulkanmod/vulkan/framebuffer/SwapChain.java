@@ -6,8 +6,10 @@ import net.vulkanmod.gl.GlTexture;
 import net.vulkanmod.render.util.MathUtil;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Vulkan;
+import net.vulkanmod.vulkan.VulkanDiagnostics;
 import net.vulkanmod.vulkan.device.DeviceManager;
 import net.vulkanmod.vulkan.queue.Queue;
+import net.vulkanmod.vulkan.select.SwapchainSelector;
 import net.vulkanmod.vulkan.texture.VulkanImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
@@ -79,6 +81,7 @@ public class SwapChain extends Framebuffer {
             VkExtent2D extent = getExtent(surfaceProperties.capabilities);
 
             if (extent.width() == 0 && extent.height() == 0) {
+                Initializer.LOGGER.info("[VULKAN] Surface extent is 0x0 (window minimised); swapchain destroyed until it is restored");
                 if (this.swapChainId != VK_NULL_HANDLE) {
                     this.swapChainImages.forEach(image -> vkDestroyImageView(device, image.getImageView(), null));
                     vkDestroySwapchainKHR(device, this.swapChainId, null);
@@ -92,7 +95,8 @@ public class SwapChain extends Framebuffer {
 
             // minImageCount depends on driver: Mesa/RADV needs a min of 4, but most other drivers are at least 2 or 3
             // TODO using FIFO present mode with image num > 2 introduces (unnecessary) input lag
-            int requestedImages = Math.max(DEFAULT_IMAGE_COUNT, surfaceProperties.capabilities.minImageCount());
+            int requestedImages = SwapchainSelector.chooseImageCount(DEFAULT_IMAGE_COUNT,
+                    surfaceProperties.capabilities.minImageCount(), surfaceProperties.capabilities.maxImageCount());
 
             IntBuffer imageCount = stack.ints(requestedImages);
 
@@ -139,6 +143,10 @@ public class SwapChain extends Framebuffer {
             }
 
             this.swapChainId = pSwapChain.get(0);
+
+            VulkanDiagnostics.logSwapchain(surfaceProperties.capabilities, surfaceProperties.formats,
+                    surfaceProperties.presentModes, surfaceFormat.format(), surfaceFormat.colorSpace(), presentMode,
+                    extent.width(), extent.height(), requestedImages);
 
             vkGetSwapchainImagesKHR(device, this.swapChainId, imageCount, null);
 
@@ -264,40 +272,27 @@ public class SwapChain extends Framebuffer {
         return this.swapChainImages.get(i).getImageView();
     }
 
+    /** Delegates the policy to {@link SwapchainSelector#chooseSurfaceFormat} (pure, unit tested). */
     private VkSurfaceFormatKHR getFormat(VkSurfaceFormatKHR.Buffer availableFormats) {
-        List<VkSurfaceFormatKHR> list = availableFormats.stream().toList();
+        List<SwapchainSelector.SurfaceFormat> formats = new ArrayList<>(availableFormats.capacity());
+        for (int i = 0; i < availableFormats.capacity(); i++)
+            formats.add(new SwapchainSelector.SurfaceFormat(availableFormats.get(i).format(), availableFormats.get(i).colorSpace()));
 
-        VkSurfaceFormatKHR format = list.get(0);
-
-        for (VkSurfaceFormatKHR availableFormat : list) {
-            if (availableFormat.format() == VK_FORMAT_R8G8B8A8_UNORM && availableFormat.colorSpace() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-                return availableFormat;
-
-            if (availableFormat.format() == VK_FORMAT_B8G8R8A8_UNORM && availableFormat.colorSpace() == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-                format = availableFormat;
-            }
-        }
-
-        if (format.format() == VK_FORMAT_B8G8R8A8_UNORM)
-            isBGRAformat = true;
-        return format;
+        SwapchainSelector.SurfaceFormat chosen = SwapchainSelector.chooseSurfaceFormat(formats);
+        isBGRAformat = chosen.format() == VK_FORMAT_B8G8R8A8_UNORM;
+        return availableFormats.get(formats.indexOf(chosen));
     }
 
+    /** Delegates the policy to {@link SwapchainSelector#choosePresentMode} (pure, unit tested). */
     private int getPresentMode(IntBuffer availablePresentModes) {
-        int requestedMode = vsync ? VK_PRESENT_MODE_FIFO_KHR : defUncappedMode;
+        int[] modes = new int[availablePresentModes.capacity()];
+        for (int i = 0; i < modes.length; i++)
+            modes[i] = availablePresentModes.get(i);
 
-        // FIFO mode is the only mode that has to be supported
-        if (requestedMode == VK_PRESENT_MODE_FIFO_KHR)
-            return VK_PRESENT_MODE_FIFO_KHR;
-
-        for (int i = 0; i < availablePresentModes.capacity(); i++) {
-            if (availablePresentModes.get(i) == requestedMode) {
-                return requestedMode;
-            }
-        }
-
-        Initializer.LOGGER.warn("Requested mode not supported: " + getDisplayModeString(requestedMode) + ": using VSync");
-        return VK_PRESENT_MODE_FIFO_KHR;
+        int mode = SwapchainSelector.choosePresentMode(vsync, defUncappedMode, modes);
+        if (!vsync && mode != defUncappedMode)
+            Initializer.LOGGER.warn("Requested mode not supported: " + getDisplayModeString(defUncappedMode) + ": using VSync");
+        return mode;
     }
 
     private String getDisplayModeString(int requestedMode) {
@@ -309,27 +304,25 @@ public class SwapChain extends Framebuffer {
         };
     }
 
+    /** Delegates the policy to {@link SwapchainSelector#chooseExtent} (pure, unit tested). */
     private static VkExtent2D getExtent(VkSurfaceCapabilitiesKHR capabilities) {
-
-        if (capabilities.currentExtent().width() != UINT32_MAX) {
-            return capabilities.currentExtent();
+        int fbWidth, fbHeight;
+        try (MemoryStack stack = stackPush()) {
+            IntBuffer width = stack.ints(0);
+            IntBuffer height = stack.ints(0);
+            glfwGetFramebufferSize(window, width, height);
+            fbWidth = width.get(0);
+            fbHeight = height.get(0);
         }
 
-        //Fallback
-        IntBuffer width = stackGet().ints(0);
-        IntBuffer height = stackGet().ints(0);
+        SwapchainSelector.Extent e = SwapchainSelector.chooseExtent(
+                new SwapchainSelector.Extent(capabilities.currentExtent().width(), capabilities.currentExtent().height()),
+                new SwapchainSelector.Extent(capabilities.minImageExtent().width(), capabilities.minImageExtent().height()),
+                new SwapchainSelector.Extent(capabilities.maxImageExtent().width(), capabilities.maxImageExtent().height()),
+                new SwapchainSelector.Extent(fbWidth, fbHeight));
 
-        glfwGetFramebufferSize(window, width, height);
-
-        VkExtent2D actualExtent = VkExtent2D.mallocStack().set(width.get(0), height.get(0));
-
-        VkExtent2D minExtent = capabilities.minImageExtent();
-        VkExtent2D maxExtent = capabilities.maxImageExtent();
-
-        actualExtent.width(MathUtil.clamp(minExtent.width(), maxExtent.width(), actualExtent.width()));
-        actualExtent.height(MathUtil.clamp(minExtent.height(), maxExtent.height(), actualExtent.height()));
-
-        return actualExtent;
+        // Caller copies it (VkExtent2D.create().set(extent)); a stack allocation would dangle after return.
+        return VkExtent2D.malloc(stackGet()).set(e.width(), e.height());
     }
 
     private static int checkPresentMode(int... requestedModes) {

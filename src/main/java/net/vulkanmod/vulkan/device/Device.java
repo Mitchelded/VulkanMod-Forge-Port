@@ -36,6 +36,14 @@ public class Device {
 
     private boolean drawIndirectSupported;
 
+    public VkPhysicalDevice getPhysicalDevice() {
+        return physicalDevice;
+    }
+
+    public VkPhysicalDeviceProperties getProperties() {
+        return properties;
+    }
+
     public Device(VkPhysicalDevice device) {
         this.physicalDevice = device;
 

@@ -8,6 +8,7 @@ import net.minecraftforge.fml.loading.FMLPaths;
 import net.minecraftforge.fml.loading.moddiscovery.ModFileInfo;
 import net.vulkanmod.config.Config;
 import net.vulkanmod.forge.ClientEvents;
+import net.vulkanmod.forge.SmokeTest;
 import net.vulkanmod.config.Platform;
 import net.vulkanmod.config.video.VideoModeManager;
 import org.apache.logging.log4j.LogManager;
@@ -43,6 +44,7 @@ public class Initializer {
         if (FMLLoader.getDist().isClient()) {
             earlyInit();
             ClientEvents.register();
+            SmokeTest.registerIfEnabled(FMLPaths.GAMEDIR.get());
         } else {
             LOGGER.warn("VulkanMod is a client-only mod; it does nothing on a dedicated server.");
         }
@@ -78,10 +80,14 @@ public class Initializer {
     private static Config loadConfig(Path path) {
         Config config = Config.load(path);
 
-        if (config == null) {
+        boolean created = config == null;
+        if (created)
             config = new Config();
+
+        config.resolveRuntimeDefaults(() -> VideoModeManager.getFirstAvailable().getVideoMode());
+
+        if (created)
             config.write();
-        }
 
         return config;
     }

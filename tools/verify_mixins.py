@@ -442,6 +442,34 @@ def check_segment(jar, src, imports, rel):
                         if not cands:
                             problems.append('%s: @%s target method %s not found in %s' % (rel, ann, mref, internal))
                             continue
+                        # ---- handler signature (Mixin validates it at apply time and crashes on mismatch)
+                        hm = re.match(r'\s*(?:(?:private|public|protected|static|final)\s+)*[\w<>\[\], .?@]+?\s+([\w$]+)\s*\(([^)]*)\)',
+                                      src[e:])
+                        if hm and ann == 'Inject' and len(cands) == 1:
+                            hp = params_desc(hm.group(2), imports)
+                            if hp is not None:
+                                hargs = re.findall(r'\[*(?:L[^;]+;|[ZBCSIJFD])', hp[1:-1])
+                                ci_idx = next((i for i, a in enumerate(hargs)
+                                               if 'mixin/injection/callback/CallbackInfo' in a), None)
+                                targs = re.findall(r'\[*(?:L[^;]+;|[ZBCSIJFD])', cands[0][1][1].split(')')[0][1:])
+                                if ci_idx is not None and ci_idx > 0 and hargs[:ci_idx] != targs:
+                                    problems.append('%s: @Inject handler %s args %s do not match target %s%s'
+                                                    % (rel, hm.group(1), ''.join(hargs[:ci_idx]), mname, cands[0][1][1]))
+                        if hm and ann == 'Redirect' and len(cands) == 1:
+                            hp = params_desc(hm.group(2), imports)
+                            at0 = ats[0] if ats else ''
+                            v0 = (ann_str(at0, 'value') or [''])[0]
+                            t0 = (ann_str(at0, 'target') or [''])[0]
+                            if hp is not None and v0 == 'INVOKE' and '(' in t0:
+                                hargs = re.findall(r'\[*(?:L[^;]+;|[ZBCSIJFD])', hp[1:-1])
+                                owner = t0[1:t0.index(';')]
+                                iargs = re.findall(r'\[*(?:L[^;]+;|[ZBCSIJFD])', t0[t0.index('(') + 1:t0.index(')')])
+                                static = any(ins[0] == 'INVOKE' and 'L%s;%s%s' % (ins[1], ins[2], ins[3]) == t0 and ins[4] == 0xb8
+                                             for ins in jar.get(cands[0][0]).methods[cands[0][1]])
+                                expected = iargs if static else ['L%s;' % owner] + iargs
+                                if hargs[:len(expected)] != expected:
+                                    problems.append('%s: @Redirect handler %s args %s do not match %s (expected %s)'
+                                                    % (rel, hm.group(1), ''.join(hargs), t0, ''.join(expected)))
                         if ann == 'Inject' and mname == '<init>':
                             for at in ats:
                                 v = (ann_str(at, 'value') or [''])[0]
