@@ -1,0 +1,131 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.+'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = "VulkanMod-Forge-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {
+        }
+    }
+}
+
+mixin {
+    add sourceSets.main, "${mod_id}.refmap.json"
+    config "${mod_id}.mixins.json"
+}
+
+repositories {
+    mavenCentral()
+}
+
+// Vulkan, VMA and shaderc bindings are not part of Minecraft's LWJGL distribution,
+// so they are bundled into the mod jar. Their version must equal Minecraft's LWJGL core (3.3.1).
+configurations {
+    // Non-transitive: lwjgl core / glfw / opengl come from Minecraft itself (boot module layer). Bundling them
+    // would create split packages (org.lwjgl.system ...) that Forge's module system rejects.
+    bundled { transitive = false }
+    implementation.extendsFrom bundled
+}
+
+def lwjglNatives = ['natives-windows', 'natives-linux']
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+
+    bundled "org.lwjgl:lwjgl-vulkan:${lwjgl_version}"
+    bundled "org.lwjgl:lwjgl-vma:${lwjgl_version}"
+    bundled "org.lwjgl:lwjgl-shaderc:${lwjgl_version}"
+    lwjglNatives.each { n ->
+        bundled "org.lwjgl:lwjgl-vma:${lwjgl_version}:${n}"
+        bundled "org.lwjgl:lwjgl-shaderc:${lwjgl_version}:${n}"
+    }
+    // Make the bindings visible to the dev runtime (runClient), which uses Forge's module layers.
+    minecraftLibrary "org.lwjgl:lwjgl-vulkan:${lwjgl_version}"
+    minecraftLibrary "org.lwjgl:lwjgl-vma:${lwjgl_version}"
+    minecraftLibrary "org.lwjgl:lwjgl-shaderc:${lwjgl_version}"
+    lwjglNatives.each { n ->
+        minecraftLibrary "org.lwjgl:lwjgl-vma:${lwjgl_version}:${n}"
+        minecraftLibrary "org.lwjgl:lwjgl-shaderc:${lwjgl_version}:${n}"
+    }
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description,
+    ]
+    inputs.properties replaceProperties
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    // Bundle the LWJGL Vulkan/VMA/shaderc classes and natives. Module descriptors and
+    // signatures are dropped so the classes become part of this mod's module.
+    from({ configurations.bundled.collect { zipTree(it) } }) {
+        exclude 'META-INF/**'
+        exclude 'module-info.class'
+    }
+    from('LICENSE') { rename { "LICENSE_vulkanmod" } }
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1',
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'MixinConfigs'            : "${mod_id}.mixins.json"
+        ])
+    }
+    finalizedBy 'reobfJar'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
