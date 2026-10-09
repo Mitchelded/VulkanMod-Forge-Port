@@ -105,41 +105,32 @@ public abstract class LevelRendererMixin {
         this.worldRenderer.renderBlockEntities(poseStack, pos.x(), pos.y(), pos.z(), this.destructionProgress, f);
     }
 
-    /**
-     * @author
-     * @reason
+    /*
+     * All chunk-renderer entry points below are @Inject(HEAD,cancellable=true)+ci.cancel() instead of @Overwrite
+     * so other rendering mods (Embeddium's core.render.world.WorldRendererMixin, Oculus) can still @Redirect/@Inject
+     * inside the vanilla bytecode. Runtime behaviour matches the previous @Overwrite exactly - VulkanMod's logic
+     * runs then cancels, so vanilla's body (and any redirects wrapping it) never executes.
      */
-    @Overwrite
-    private void setupRender(Camera camera, Frustum frustum, boolean isCapturedFrustum, boolean spectator) {
+
+    @Inject(method = "setupRender", at = @At("HEAD"), cancellable = true)
+    private void vulkan$setupRender(Camera camera, Frustum frustum, boolean isCapturedFrustum, boolean spectator, CallbackInfo ci) {
         this.worldRenderer.setupRenderer(camera, frustum, isCapturedFrustum, spectator);
-
         entitiesMap.clear();
+        ci.cancel();
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    private void compileChunks(Camera camera) {
-//        this.worldRenderer.uploadSections();
+    @Inject(method = "compileChunks", at = @At("HEAD"), cancellable = true)
+    private void vulkan$compileChunks(Camera camera, CallbackInfo ci) {
+        ci.cancel();
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    public boolean isChunkCompiled(BlockPos blockPos) {
-        return this.worldRenderer.isSectionCompiled(blockPos);
+    @Inject(method = "isChunkCompiled", at = @At("HEAD"), cancellable = true)
+    private void vulkan$isChunkCompiled(BlockPos blockPos, org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        cir.setReturnValue(this.worldRenderer.isSectionCompiled(blockPos));
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    private void renderChunkLayer(RenderType renderType, PoseStack poseStack, double camX, double camY, double camZ, Matrix4f projectionMatrix) {
+    @Inject(method = "renderChunkLayer", at = @At("HEAD"), cancellable = true)
+    private void vulkan$renderChunkLayer(RenderType renderType, PoseStack poseStack, double camX, double camY, double camZ, Matrix4f projectionMatrix, CallbackInfo ci) {
         this.worldRenderer.renderSectionLayer(renderType, poseStack, camX, camY, camZ, projectionMatrix);
 
         // Forge patches this method to fire RenderLevelStageEvent (AFTER_SOLID_BLOCKS, ...); keep that contract.
@@ -147,83 +138,55 @@ public abstract class LevelRendererMixin {
         ForgeHooksClient.dispatchRenderStage(renderType, (LevelRenderer) (Object) this, poseStack, projectionMatrix, this.ticks,
                 this.minecraft.gameRenderer.getMainCamera(), this.getFrustum());
         renderType.clearRenderState();
+        ci.cancel();
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    public void allChanged() {
+    @Inject(method = "allChanged", at = @At("HEAD"), cancellable = true)
+    private void vulkan$allChanged(CallbackInfo ci) {
         if (this.level != null) {
             this.graphicsChanged();
             this.level.clearTintCaches();
 
-//            this.needsFullRenderChunkUpdate = true;
             this.generateClouds = true;
-//            this.recentlyCompiledChunks.clear();
             ItemBlockRenderTypes.setFancy(Minecraft.useFancyGraphics());
             this.lastViewDistance = this.minecraft.options.getEffectiveRenderDistance();
-//         if (this.viewArea != null) {
-//            this.viewArea.releaseAllBuffers();
-//         }
-//
-//         this.chunkRenderDispatcher.blockUntilClear();
             synchronized (this.globalBlockEntities) {
                 this.globalBlockEntities.clear();
             }
-
         }
+        ci.cancel();
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    private void setSectionDirty(int x, int y, int z, boolean flag) {
+    @Inject(method = "setSectionDirty(IIIZ)V", at = @At("HEAD"), cancellable = true)
+    private void vulkan$setSectionDirty(int x, int y, int z, boolean flag, CallbackInfo ci) {
         this.worldRenderer.setSectionDirty(x, y, z, flag);
+        ci.cancel();
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    public String getChunkStatistics() {
-        return this.worldRenderer.getChunkStatistics();
+    @Inject(method = "getChunkStatistics", at = @At("HEAD"), cancellable = true)
+    private void vulkan$getChunkStatistics(org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<String> cir) {
+        cir.setReturnValue(this.worldRenderer.getChunkStatistics());
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    public boolean hasRenderedAllChunks() {
-        return this.worldRenderer.graphNeedsUpdate();
+    @Inject(method = "hasRenderedAllChunks", at = @At("HEAD"), cancellable = true)
+    private void vulkan$hasRenderedAllChunks(org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        cir.setReturnValue(this.worldRenderer.graphNeedsUpdate());
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    public int countRenderedChunks() {
-        return this.worldRenderer.getVisibleSectionsCount();
+    @Inject(method = "countRenderedChunks", at = @At("HEAD"), cancellable = true)
+    private void vulkan$countRenderedChunks(org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Integer> cir) {
+        cir.setReturnValue(this.worldRenderer.getVisibleSectionsCount());
     }
 
-    /**
-     * @author
-     * @reason
-     */
-    @Overwrite
-    private void renderEntity(Entity entity, double d, double e, double f, float g, PoseStack poseStack, MultiBufferSource multiBufferSource) {
+    @Inject(method = "renderEntity", at = @At("HEAD"), cancellable = true)
+    private void vulkan$renderEntity(Entity entity, double d, double e, double f, float g, PoseStack poseStack, MultiBufferSource multiBufferSource, CallbackInfo ci) {
         if (!Initializer.CONFIG.entityCulling) {
             double h = Mth.lerp(g, entity.xOld, entity.getX());
             double i = Mth.lerp(g, entity.yOld, entity.getY());
             double j = Mth.lerp(g, entity.zOld, entity.getZ());
             float k = Mth.lerp(g, entity.yRotO, entity.getYRot());
             this.entityRenderDispatcher.render(entity, h - d, i - e, j - f, k, g, poseStack, multiBufferSource, this.entityRenderDispatcher.getPackedLightCoords(entity, g));
+            ci.cancel();
             return;
         }
 
@@ -236,7 +199,7 @@ public abstract class LevelRendererMixin {
         }
 
         list.add(new Pair<>(entity, multiBufferSource));
-
+        ci.cancel();
     }
 
     @Inject(method = "renderLevel", at = @At(value = "INVOKE",

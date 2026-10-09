@@ -57,6 +57,31 @@ public final class VulkanWindowHandoff {
         return replaceWindow(handle, title.get(), monitor.getAsLong());
     }
 
+    /**
+     * Post-handoff variant: called from an @Inject at Window.<init> RETURN when we did <em>not</em> replace the
+     * ImmediateWindowHandler.setupMinecraftWindow call site (because another mod — e.g. Embeddium — also @Redirects it,
+     * and sharing the call site via @Inject + late swap avoids the mixin conflict). Takes the window handle vanilla's
+     * ctor assigned to {@code Window.window} and, if it owns a GL context, destroys it and returns a GLFW_NO_API
+     * replacement at the same geometry. Otherwise returns the input unchanged.
+     */
+    public static long handoffExistingWindow(long existingHandle, String title) {
+        if (existingHandle == 0L) {
+            throw new IllegalStateException("[VULKAN] Window handoff called with a null handle");
+        }
+        int clientApi = glfwGetWindowAttrib(existingHandle, GLFW_CLIENT_API);
+        if (clientApi == GLFW_NO_API) {
+            Initializer.LOGGER.info("[VULKAN] Window already Vulkan-compatible (client API none)");
+            return existingHandle;
+        }
+        Initializer.LOGGER.info("[VULKAN] Vanilla window handoff produced an OpenGL window (client API 0x{}); replacing it with a Vulkan-compatible window",
+                Integer.toHexString(clientApi));
+        return replaceWindow(existingHandle, title, 0L);
+    }
+
+    public static void applyVulkanWindowHintsExternal() {
+        applyVulkanWindowHints();
+    }
+
     private static void applyVulkanWindowHints() {
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);

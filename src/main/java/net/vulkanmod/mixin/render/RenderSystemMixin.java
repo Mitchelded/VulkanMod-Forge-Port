@@ -24,7 +24,9 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.function.Consumer;
 
@@ -50,31 +52,30 @@ public abstract class RenderSystemMixin {
 
     @Shadow private static @Nullable Thread renderThread;
 
-    /**
-     * @author
+    /*
+     * _setShaderTexture(int, int) and initRenderer: converted from @Overwrite to @Inject(HEAD,cancellable) so
+     * other rendering mods (Oculus iris$onRendererInit on initRenderer, iris$_setShaderTexture on this overload)
+     * can @Inject into the vanilla bytecode. Runtime behaviour is identical - we run VulkanMod's logic then
+     * cancel, so vanilla's body (and any redirects/injects inside it) never executes.
      */
-    @Overwrite(remap = false)
-    public static void _setShaderTexture(int i, int id) {
+    @Inject(method = "_setShaderTexture(II)V", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void vulkan$_setShaderTexture(int i, int id, CallbackInfo ci) {
         if (i >= 0 && i < VTextureSelector.SIZE) {
             GlTexture glTexture = GlTexture.getTexture(id);
             VulkanImage vulkanImage = glTexture != null ? glTexture.getVulkanImage() : null;
 
-            if(vulkanImage == null)
-                return;
-
-            VTextureSelector.bindTexture(i, vulkanImage);
+            if (vulkanImage != null)
+                VTextureSelector.bindTexture(i, vulkanImage);
         }
-
+        ci.cancel();
     }
 
-    /**
-     * @author
-     */
-    @Overwrite(remap = false)
-    public static void initRenderer(int debugVerbosity, boolean debugSync) {
+    @Inject(method = "initRenderer", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void vulkan$initRenderer(int debugVerbosity, boolean debugSync, CallbackInfo ci) {
         VRenderSystem.initRenderer();
 
         renderThread.setPriority(Thread.NORM_PRIORITY + 2);
+        ci.cancel();
     }
 
     /**
