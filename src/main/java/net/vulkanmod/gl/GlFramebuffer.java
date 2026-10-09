@@ -3,6 +3,7 @@ package net.vulkanmod.gl;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import it.unimi.dsi.fastutil.ints.Int2ReferenceOpenHashMap;
 import net.minecraft.client.Minecraft;
+import net.vulkanmod.Initializer;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.framebuffer.Framebuffer;
 import net.vulkanmod.vulkan.framebuffer.RenderPass;
@@ -13,10 +14,11 @@ import org.lwjgl.opengl.GL30;
 import static org.lwjgl.vulkan.VK11.*;
 
 public class GlFramebuffer {
-    private static int ID_COUNTER = 1;
+    private static int ID_COUNTER = 1 << 20; // above raw-GL driver names (GL sink), see GlTexture
     private static final Int2ReferenceOpenHashMap<GlFramebuffer> map = new Int2ReferenceOpenHashMap<>();
     private static int boundId = 0;
     private static GlFramebuffer boundFramebuffer;
+    private static final it.unimi.dsi.fastutil.ints.IntOpenHashSet unknownIdWarned = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
 
     public static void resetBoundFramebuffer() {
         boundFramebuffer = null;
@@ -26,6 +28,9 @@ public class GlFramebuffer {
     static void beginRendering(GlFramebuffer framebuffer) {
         Renderer.getInstance().beginRendering(framebuffer.renderPass, framebuffer.framebuffer);
 
+        // beginRendering may end the previous render pass, which resets the bound GL framebuffer;
+        // restore it so further attachments (e.g. a RenderTarget created mid-frame) still target it
+        boundFramebuffer = framebuffer;
         boundId = framebuffer.id;
     }
 
@@ -40,6 +45,18 @@ public class GlFramebuffer {
         // target
         // 36160 GL_FRAMEBUFFER
         // 36161 GL_RENDERBUFFER
+
+        // Read bindings are not emulated and must not redirect where rendering goes
+        // (e.g. RenderTarget.copyDepthFrom binds the source as GL_READ_FRAMEBUFFER)
+        if(target == GL30.GL_READ_FRAMEBUFFER)
+            return;
+
+        // The main target renders to the swapchain pass; its GL framebuffer id (created by vanilla createBuffers on
+        // resize) is only an emulation detail. Mods that rebind it directly (e.g. Lodestone's copyDepthBuffer) mean
+        // "bind the main target", which is what binding 0 does here.
+        RenderTarget mainTarget = Minecraft.getInstance().getMainRenderTarget();
+        if(mainTarget != null && id == mainTarget.frameBufferId)
+            id = 0;
 
         if(boundId == id)
             return;
@@ -57,10 +74,17 @@ public class GlFramebuffer {
             return;
         }
 
-        boundFramebuffer = map.get(id);
+        GlFramebuffer framebuffer = map.get(id);
 
-        if(boundFramebuffer == null)
-            throw new NullPointerException("bound framebuffer is null");
+        // Unknown name (e.g. created through raw GL in the GL sink context): GL reports GL_INVALID_OPERATION and
+        // leaves the binding unchanged; do the same instead of crashing
+        if(framebuffer == null) {
+            if (unknownIdWarned.add(id))
+                Initializer.LOGGER.warn("[VULKAN] glBindFramebuffer: unknown framebuffer {} ignored", id);
+            return;
+        }
+
+        boundFramebuffer = framebuffer;
 
         if(boundFramebuffer.framebuffer != null) {
             beginRendering(boundFramebuffer);
@@ -72,12 +96,14 @@ public class GlFramebuffer {
             return;
         }
 
-        boundFramebuffer = map.remove(id);
+        GlFramebuffer framebuffer = map.remove(id);
 
-        if(boundFramebuffer == null)
-            throw new NullPointerException("bound framebuffer is null");
+        // Unknown name: GL silently ignores it
+        if(framebuffer == null)
+            return;
 
-        boundFramebuffer.cleanUp();
+        if(framebuffer.framebuffer != null)
+            framebuffer.cleanUp();
         boundFramebuffer = null;
     }
 
@@ -91,6 +117,12 @@ public class GlFramebuffer {
         // texTarget
         // 3553 texture2D
 
+        // Stencil is not emulated: the depth image already backs a combined depth-stencil texture
+        if(attachment == GL30.GL_STENCIL_ATTACHMENT)
+            return;
+        if(attachment == GL30.GL_DEPTH_STENCIL_ATTACHMENT)
+            attachment = GL30.GL_DEPTH_ATTACHMENT;
+
         if(attachment != GL30.GL_COLOR_ATTACHMENT0 && attachment != GL30.GL_DEPTH_ATTACHMENT) {
             throw new UnsupportedOperationException();
         }
@@ -101,12 +133,18 @@ public class GlFramebuffer {
             throw new UnsupportedOperationException();
         }
 
+        // No emulated framebuffer bound (binding an unknown name was ignored): nothing to attach to
+        if(boundFramebuffer == null)
+            return;
+
         boundFramebuffer.setAttachmentTexture(attachment, texture);
     }
 
     public static void framebufferRenderbuffer(int target, int attachment, int renderbuffertarget, int renderbuffer) {
-        if (boundFramebuffer == null)
+        if (boundFramebuffer == null || attachment == GL30.GL_STENCIL_ATTACHMENT)
             return;
+        if (attachment == GL30.GL_DEPTH_STENCIL_ATTACHMENT)
+            attachment = GL30.GL_DEPTH_ATTACHMENT;
 
         boundFramebuffer.setAttachmentRenderbuffer(attachment, renderbuffer);
     }
@@ -142,8 +180,9 @@ public class GlFramebuffer {
     void setAttachmentTexture(int attachment, int texture) {
         GlTexture glTexture = GlTexture.getTexture(texture);
 
+        // Texture not created through the emulation (e.g. raw GL in the sink context): ignore like an invalid name
         if(glTexture == null)
-            throw new NullPointerException(String.format("Texture %d is null", texture));
+            return;
 
         if(glTexture.vulkanImage == null)
             return;

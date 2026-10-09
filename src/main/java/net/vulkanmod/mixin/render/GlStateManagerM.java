@@ -246,16 +246,6 @@ public class GlStateManagerM {
 
     /**
      * @author
-     * @reason No-op: Vulkan has no GL program objects, and vertex attribute locations are
-     * described through VkPipelineVertexInputStateCreateInfo at pipeline creation. Keeping
-     * this stub is important even when the ShaderInstance-level @Redirect loses a priority
-     * race (e.g. to Oculus), because the winning redirect still forwards to this call.
-     */
-    @Overwrite(remap = false)
-    public static void _glBindAttribLocation(int program, int index, CharSequence name) {}
-
-    /**
-     * @author
      */
     @Overwrite(remap = false)
     public static void _disableDepthTest() {

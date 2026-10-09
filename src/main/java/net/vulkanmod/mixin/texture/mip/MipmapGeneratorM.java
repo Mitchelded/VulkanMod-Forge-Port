@@ -3,6 +3,7 @@ package net.vulkanmod.mixin.texture.mip;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.Util;
 import net.minecraft.client.renderer.texture.MipmapGenerator;
+import net.minecraftforge.client.ForgeHooksClient;
 import net.vulkanmod.mixin.texture.image.NativeImageAccessor;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.system.MemoryUtil;
@@ -59,12 +60,20 @@ public abstract class MipmapGeneratorM {
 
             }
 
+            // Forge patches vanilla here (clamp to 1px, skip levels past the image's own max); keep parity,
+            // otherwise odd-sized sprites crash with "Invalid texture size: 0x0" when allowMipmapLowering=false
+            int maxMipmapLevel = ForgeHooksClient.getMaxMipmapLevel(nativeImages2[0].getWidth(), nativeImages2[0].getHeight());
+
             for(int j = 1; j <= i; ++j) {
                 if (j < nativeImages.length) {
                     nativeImages2[j] = nativeImages[j];
                 } else {
                     NativeImage nativeImage = nativeImages2[j - 1];
-                    NativeImage nativeImage2 = new NativeImage(nativeImage.getWidth() >> 1, nativeImage.getHeight() >> 1, false);
+                    NativeImage nativeImage2 = new NativeImage(Math.max(1, nativeImage.getWidth() >> 1), Math.max(1, nativeImage.getHeight() >> 1), false);
+                    nativeImages2[j] = nativeImage2;
+                    if (j > maxMipmapLevel)
+                        continue;
+
                     int width = nativeImage2.getWidth();
                     int height = nativeImage2.getHeight();
 

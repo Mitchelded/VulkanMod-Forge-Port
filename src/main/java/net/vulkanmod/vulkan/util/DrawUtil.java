@@ -63,6 +63,8 @@ public class DrawUtil {
         Renderer renderer = Renderer.getInstance();
 
         GraphicsPipeline pipeline = ((ShaderMixed)(shaderInstance)).getPipeline();
+        if (pipeline == null) // mod shader that failed GLSL->SPIR-V conversion
+            return;
         renderer.bindGraphicsPipeline(pipeline);
         renderer.uploadAndBindUBOs(pipeline);
         Renderer.getDrawer().draw(buffer.vertexBuffer(), parameters.mode(), parameters.format(), parameters.vertexCount());

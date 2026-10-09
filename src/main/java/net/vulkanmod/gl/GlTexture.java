@@ -16,7 +16,9 @@ import java.nio.ByteBuffer;
 import static org.lwjgl.vulkan.VK10.*;
 
 public class GlTexture {
-    private static int ID_COUNTER = 1;
+    // Start far above the names a real GL driver hands out: with the GL sink context, mods that create objects
+    // through raw GL get small driver names, which must never alias emulated textures (e.g. the lightmap)
+    private static int ID_COUNTER = 1 << 20;
     private static final Int2ReferenceOpenHashMap<GlTexture> map = new Int2ReferenceOpenHashMap<>();
     private static int boundTextureId = 0;
     private static GlTexture boundTexture;
@@ -41,8 +43,11 @@ public class GlTexture {
         if (id <= 0)
             return;
 
-        if (boundTexture == null)
-            throw new NullPointerException("bound texture is null");
+        // GL creates the texture object on first bind of an unused name
+        if (boundTexture == null) {
+            boundTexture = new GlTexture(id);
+            map.put(id, boundTexture);
+        }
 
         VulkanImage vulkanImage = boundTexture.vulkanImage;
         if (vulkanImage != null)

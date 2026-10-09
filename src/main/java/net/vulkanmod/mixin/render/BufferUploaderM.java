@@ -14,9 +14,13 @@ import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.texture.VTextureSelector;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
+import org.spongepowered.asm.mixin.Unique;
+import net.vulkanmod.Initializer;
 
 @Mixin(BufferUploader.class)
 public class BufferUploaderM {
+    @Unique
+    private static final java.util.Set<String> SKIPPED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * @author
@@ -40,6 +44,9 @@ public class BufferUploaderM {
 
             // Prevent drawing if formats don't match to avoid disturbing visual bugs
             if (shaderInstance.getVertexFormat() != renderedBuffer.drawState().format()) {
+                if (SKIPPED.add("format:" + shaderInstance.getName()))
+                    Initializer.LOGGER.warn("[VULKAN] Skipping draws with shader {}: vertex format {} does not match buffer format {}",
+                            shaderInstance.getName(), shaderInstance.getVertexFormat(), renderedBuffer.drawState().format());
                 renderedBuffer.release();
                 return;
             }
@@ -49,6 +56,13 @@ public class BufferUploaderM {
             shaderInstance.apply();
 
             GraphicsPipeline pipeline = ((ShaderMixed)(shaderInstance)).getPipeline();
+            // Mod shader that failed GLSL->SPIR-V conversion: skip the draw instead of crashing
+            if (pipeline == null) {
+                if (SKIPPED.add("pipeline:" + shaderInstance.getName()))
+                    Initializer.LOGGER.warn("[VULKAN] Skipping draws with shader {}: no Vulkan pipeline (GLSL conversion failed)", shaderInstance.getName());
+                renderedBuffer.release();
+                return;
+            }
             VRenderSystem.setPrimitiveTopologyGL(parameters.mode().asGLMode);
             renderer.bindGraphicsPipeline(pipeline);
             VTextureSelector.bindShaderTextures(pipeline);

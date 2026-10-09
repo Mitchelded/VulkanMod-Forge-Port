@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
 // TODO: This class is only used to emulate a CPU buffer for texture copying purposes
 //  any other use is not supported
 public class GlBuffer {
-    private static int ID_COUNTER = 1;
+    private static int ID_COUNTER = 1 << 20; // above raw-GL driver names (GL sink), see GlTexture
     private static final Int2ReferenceOpenHashMap<GlBuffer> map = new Int2ReferenceOpenHashMap<>();
     private static int boundId = 0;
     private static GlBuffer boundBuffer;
@@ -31,8 +31,11 @@ public class GlBuffer {
         if (buffer <= 0)
             return;
 
-        if (boundBuffer == null)
-            throw new NullPointerException("bound texture is null");
+        // GL creates the buffer object on first bind of an unused name
+        if (boundBuffer == null) {
+            boundBuffer = new GlBuffer(buffer);
+            map.put(buffer, boundBuffer);
+        }
 
         checkTarget(target);
 

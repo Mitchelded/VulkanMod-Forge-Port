@@ -4,6 +4,13 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.GenericDirtMessageScreen;
 import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.level.GameRules;
@@ -121,7 +128,15 @@ public final class SmokeTest {
 
     private void timeout(double seconds, String what) {
         if (elapsed() > seconds)
-            fail("timeout after " + seconds + " s waiting for " + what);
+            fail("timeout after " + seconds + " s waiting for " + what + " " + diag(Minecraft.getInstance()));
+    }
+
+    private static String diag(Minecraft mc) {
+        return "(screen " + (mc.screen != null ? mc.screen.getClass().getName() : "null")
+                + ", overlay " + (mc.getOverlay() != null ? mc.getOverlay().getClass().getName() : "null")
+                + ", dim " + (mc.level != null ? mc.level.dimension().location() : "-")
+                + ", player " + (mc.player != null ? mc.player.blockPosition().toShortString() + (mc.player.isDeadOrDying() ? " DEAD" : "") : "-")
+                + ", sections " + (mc.levelRenderer != null ? mc.levelRenderer.countRenderedChunks() : -1) + ")";
     }
 
     private void onClientTick(TickEvent.ClientTickEvent event) {
@@ -184,12 +199,18 @@ public final class SmokeTest {
                 next(State.WAIT_WORLD, "world load requested");
             }
             case WAIT_WORLD -> {
-                if (mc.level != null && mc.player != null && mc.screen == null && mc.levelRenderer.countRenderedChunks() > 0)
+                if (mc.level != null && mc.player != null && mc.screen == null && mc.levelRenderer.countRenderedChunks() > 0) {
+                    stepStart = System.nanoTime();
                     next(State.IN_WORLD, "world joined; " + mc.levelRenderer.countRenderedChunks() + " chunk sections rendered");
+                }
                 else
                     timeout(240, "world to load and render");
             }
             case IN_WORLD -> {
+                if (Boolean.parseBoolean(prop("extended", "false"))) {
+                    extendedWorldTick(mc);
+                    return;
+                }
                 double seconds = Double.parseDouble(prop("worldSeconds", "20"));
                 if (!commandsSent && elapsed() > 2) {
                     commandsSent = true;
@@ -228,8 +249,14 @@ public final class SmokeTest {
                 next(State.WAIT_TITLE_AGAIN, "left the world");
             }
             case WAIT_TITLE_AGAIN -> {
-                if (mc.level == null && mc.screen instanceof TitleScreen && framesInState() >= 30)
-                    next(State.EXIT, "returned to title screen");
+                if (mc.level == null && mc.screen instanceof TitleScreen && framesInState() >= 30) {
+                    if (Boolean.parseBoolean(prop("extended", "false")) && !reopened) {
+                        reopened = true;
+                        step = 0;
+                        next(State.ENTER_WORLD, "returned to title screen (world saved); reopening it");
+                    } else
+                        next(State.EXIT, "returned to title screen");
+                }
                 else
                     timeout(120, "title screen after leaving the world");
             }
@@ -244,6 +271,150 @@ public final class SmokeTest {
         }
     }
 
+    // ---- extended in-world checks (prop extended=true): entities, block entities, particles, GUI, resource reload,
+    // dimension change, then save/quit and reopen. Commands run on the integrated server at op level, so they work
+    // in worlds without cheats; use a copy of a real world.
+    private int step = 0;
+    private boolean reopened;
+    private long stepStart = System.nanoTime();
+    private CompletableFuture<Void> reload;
+    private double ox, oy, oz;
+
+    private double stepElapsed() {
+        return (System.nanoTime() - stepStart) / 1e9;
+    }
+
+    private void nextStep(String passMessage) {
+        if (passMessage != null)
+            pass(passMessage);
+        step++;
+        stepStart = System.nanoTime();
+    }
+
+    private void serverCmd(Minecraft mc, String cmd) {
+        IntegratedServer server = mc.getSingleplayerServer();
+        if (server == null || mc.player == null)
+            return;
+        UUID id = mc.player.getUUID();
+        server.execute(() -> {
+            ServerPlayer sp = server.getPlayerList().getPlayer(id);
+            if (sp == null)
+                return;
+            int r = server.getCommands().performPrefixedCommand(sp.createCommandSourceStack().withPermission(4), cmd);
+            Initializer.LOGGER.info("[SMOKE] /{} -> {}", cmd, r);
+        });
+    }
+
+    private void shot(Minecraft mc, String name) {
+        Screenshot.grab(gameDir.toFile(), "smoke-" + name + ".png", mc.getMainRenderTarget(),
+                msg -> Initializer.LOGGER.info("[SMOKE] screenshot {}: {}", name, msg.getString()));
+        pass("screenshot " + name + " (" + mc.levelRenderer.countRenderedChunks() + " sections, "
+                + (mc.level != null ? mc.level.getEntityCount() : 0) + " entities, dim "
+                + (mc.level != null ? mc.level.dimension().location() : "-") + ")");
+    }
+
+    private boolean worldReady(Minecraft mc, ResourceKey<Level> dim) {
+        return mc.level != null && mc.player != null && mc.screen == null && mc.getOverlay() == null
+                && mc.level.dimension() == dim && mc.levelRenderer.countRenderedChunks() > 0;
+    }
+
+    private void extendedWorldTick(Minecraft mc) {
+        double t = stepElapsed();
+        if (t > 120)
+            fail("timeout in extended step " + step + " " + diag(mc));
+        if (state == State.DONE)
+            return;
+
+        if (reopened) {
+            if (t > 8) {
+                shot(mc, "reopened-world");
+                next(State.LEAVE, "saved world reopened and rendered");
+            }
+            return;
+        }
+
+        switch (step) {
+            case 0 -> {
+                if (t < 2) return;
+                ox = mc.player.getX(); oy = mc.player.getY(); oz = mc.player.getZ();
+                // face south (+Z), clear a pocket in front, then place everything at world-relative offsets
+                for (String c : new String[]{"gamemode creative", "time set day", "weather clear", "gamerule doDaylightCycle false",
+                        "tp @s ~ ~ ~ 0 20", "fill ~-4 ~ ~2 ~4 ~3 ~9 minecraft:air",
+                        "summon minecraft:pig ~1 ~ ~5 {NoAI:1b}", "summon minecraft:sheep ~-1 ~ ~5 {NoAI:1b}", "summon minecraft:armor_stand ~ ~ ~4",
+                        "summon minecraft:zombie ~2 ~ ~7 {NoAI:1b}", "summon tfc:cow ~-2 ~ ~7 {NoAI:1b}",
+                        "setblock ~-3 ~ ~4 minecraft:chest", "setblock ~-3 ~ ~6 tfc:firepit", "setblock ~3 ~ ~4 gtceu:lv_electric_furnace",
+                        "setblock ~3 ~ ~6 minecraft:oak_sign"})
+                    serverCmd(mc, c);
+                mc.options.renderDebug = Boolean.parseBoolean(prop("f3", "false"));
+                nextStep("entities summoned and block entities placed at " + (int) ox + " " + (int) oy + " " + (int) oz);
+            }
+            case 1 -> {
+                if (t < 4) return;
+                serverCmd(mc, "particle minecraft:flame ~ ~1 ~3 0.6 0.6 0.6 0.02 400 force");
+                serverCmd(mc, "particle minecraft:happy_villager ~ ~1 ~3 1 1 1 0 200 force");
+                nextStep("particles spawned");
+            }
+            case 2 -> {
+                if (t < 0.5) return;
+                shot(mc, "overworld-entities-particles");
+                nextStep(null);
+            }
+            case 3 -> {
+                if (t < 2) return;
+                mc.setScreen(new InventoryScreen(mc.player));
+                nextStep("inventory screen opened: " + (mc.screen != null ? mc.screen.getClass().getName() : "null"));
+            }
+            case 4 -> {
+                if (t < 3) return;
+                shot(mc, "inventory-gui");
+                nextStep(null);
+            }
+            case 5 -> {
+                // keep the GUI open so it can also be captured from outside the game
+                if (t < 6) return;
+                nextStep(null);
+            }
+            case 6 -> {
+                if (t < 1) return;
+                mc.setScreen(null);
+                reload = mc.reloadResourcePacks();
+                nextStep("resource reload started");
+            }
+            case 7 -> {
+                if (reload.isDone() && mc.getOverlay() == null && mc.screen == null && t > 3) {
+                    if (reload.isCompletedExceptionally())
+                        fail("resource reload failed");
+                    else {
+                        shot(mc, "after-resource-reload");
+                        nextStep("resource reload completed");
+                    }
+                }
+            }
+            case 8 -> {
+                if (t < 2) return;
+                serverCmd(mc, "execute in minecraft:the_nether run tp @s 0 100 0");
+                nextStep("teleport to the_nether requested");
+            }
+            case 9 -> {
+                if (worldReady(mc, Level.NETHER) && t > 8) {
+                    shot(mc, "nether");
+                    nextStep("dimension change to the_nether rendered");
+                }
+            }
+            case 10 -> {
+                if (t < 2) return;
+                serverCmd(mc, String.format(java.util.Locale.ROOT, "execute in minecraft:overworld run tp @s %.1f %.1f %.1f", ox, oy, oz));
+                nextStep("teleport back to the overworld requested");
+            }
+            case 11 -> {
+                if (worldReady(mc, Level.OVERWORLD) && t > 8) {
+                    shot(mc, "back-in-overworld");
+                    next(State.LEAVE, "dimension change back to the overworld rendered");
+                }
+            }
+        }
+    }
+
     private void writeResult(boolean passed) {
         List<String> lines = new ArrayList<>(report);
         lines.add(0, (passed ? "RESULT PASS" : "RESULT FAIL") + " frames=" + VulkanDiagnostics.framesRendered());
@@ -254,3 +425,4 @@ public final class SmokeTest {
         }
     }
 }
+

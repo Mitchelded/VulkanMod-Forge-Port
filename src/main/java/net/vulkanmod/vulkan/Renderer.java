@@ -562,7 +562,9 @@ public class Renderer {
     }
 
     public static void clearAttachments(int v, int width, int height) {
-        if (skipRendering)
+        // Stencil is not emulated; ignore GL_STENCIL_BUFFER_BIT (0x400)
+        v &= ~0x400;
+        if (skipRendering || v == 0)
             return;
 
         try (MemoryStack stack = stackPush()) {

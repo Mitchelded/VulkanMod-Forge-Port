@@ -14,7 +14,7 @@ import java.nio.ByteBuffer;
 import static org.lwjgl.vulkan.VK10.*;
 
 public class GlRenderbuffer {
-    private static int ID_COUNTER = 1;
+    private static int ID_COUNTER = 1 << 20; // above raw-GL driver names (GL sink), see GlTexture
     private static final Int2ReferenceOpenHashMap<GlRenderbuffer> map = new Int2ReferenceOpenHashMap<>();
     private static int boundId = 0;
     private static GlRenderbuffer bound;
@@ -33,8 +33,11 @@ public class GlRenderbuffer {
         if (id <= 0)
             return;
 
-        if (bound == null)
-            throw new NullPointerException("bound texture is null");
+        // GL creates the renderbuffer object on first bind of an unused name
+        if (bound == null) {
+            bound = new GlRenderbuffer(id);
+            map.put(id, bound);
+        }
 
         VulkanImage vulkanImage = bound.vulkanImage;
         if (vulkanImage != null)

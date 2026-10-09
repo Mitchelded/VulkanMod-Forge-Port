@@ -32,6 +32,14 @@ public class VBO {
     public void upload(BufferBuilder.RenderedBuffer buffer) {
         BufferBuilder.DrawState parameters = buffer.drawState();
 
+        // Vulkan cannot create zero-sized buffers (VK_ERROR_INITIALIZATION_FAILED); like GL, an empty upload
+        // just leaves nothing to draw (e.g. Ad Astra's sky renderer building an empty star buffer)
+        if (parameters.vertexCount() == 0) {
+            this.close();
+            buffer.release();
+            return;
+        }
+
         this.indexCount = parameters.indexCount();
         this.vertexCount = parameters.vertexCount();
         this.mode = parameters.mode();
@@ -115,7 +123,8 @@ public class VBO {
     }
 
     public void drawWithShader(Matrix4f MV, Matrix4f P, GraphicsPipeline pipeline) {
-        if (this.indexCount != 0) {
+        // pipeline is null for mod shaders that failed GLSL->SPIR-V conversion: skip the draw
+        if (this.indexCount != 0 && pipeline != null) {
             RenderSystem.assertOnRenderThread();
 
             VRenderSystem.applyMVP(MV, P);

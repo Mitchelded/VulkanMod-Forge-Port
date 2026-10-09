@@ -81,7 +81,11 @@ public abstract class VTextureSelector {
     }
 
     public static VulkanImage getImage(int i) {
-        return boundTextures[i];
+        // A sampler can be bound to a texture whose image is not allocated yet (e.g. FancyMenu's panorama while its
+        // textures load). Fall back to white instead of throwing from inside the draw: the exception escaped mods'
+        // push/pop pairs and left a flipped model-view matrix on the stack (all entities rendered behind the camera).
+        VulkanImage image = boundTextures[i];
+        return image != null ? image : whiteTexture;
     }
 
     public static void setLightTexture(VulkanImage texture) {

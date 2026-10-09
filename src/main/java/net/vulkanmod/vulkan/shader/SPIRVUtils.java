@@ -147,7 +147,6 @@ public class SPIRVUtils {
 
         @Override
         public long invoke(long user_data, long requested_source, int type, long requesting_source, long include_depth) {
-            var requesting = memASCII(requesting_source);
             var requested = memASCII(requested_source);
 
             for (String includePath : includePaths) {
@@ -157,7 +156,10 @@ public class SPIRVUtils {
 
                 // Heap-allocated: shaderc reads the result after this callback returns and hands it back to
                 // ShaderReleaser. (The Fabric code returned memory from an already-popped MemoryStack frame.)
-                ByteBuffer name = MemoryUtil.memASCII(requested, false);
+                // NUL-terminated in memory (length excludes it): shaderc passes this pointer back as
+                // requesting_source for nested includes, and C-string reads of it must not run off the buffer.
+                ByteBuffer nameNT = MemoryUtil.memASCII(requested, true);
+                ByteBuffer name = nameNT.slice(0, nameNT.remaining() - 1);
                 ByteBuffer content = MemoryUtil.memAlloc(bytes.length);
                 content.put(bytes).flip();
                 return ShadercIncludeResult.calloc()
@@ -166,7 +168,15 @@ public class SPIRVUtils {
                         .user_data(user_data).address();
             }
 
-            throw new RuntimeException(String.format("%s: Unable to find %s in include paths %s", requesting, requested, includePaths));
+            // Never throw out of this native upcall: shaderc would dereference a NULL result and crash the JVM.
+            // shaderc's contract for a failed include is an empty source_name with the error message as content.
+            String error = String.format("%s: Unable to find %s in include paths %s", memASCII(requesting_source), requested, includePaths);
+            ByteBuffer name = MemoryUtil.memAlloc(1).put(0, (byte) 0).limit(0);
+            ByteBuffer content = MemoryUtil.memASCII(error, false);
+            return ShadercIncludeResult.calloc()
+                    .source_name(name)
+                    .content(content)
+                    .user_data(user_data).address();
         }
     }
 

@@ -12,8 +12,7 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.Redirect;
 
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
@@ -44,51 +43,35 @@ public abstract class DebugScreenOverlayM {
     @Shadow
     protected abstract List<String> getSystemInformation();
 
-    /*
-     * This was previously a @Redirect on the Lists.newArrayList(Object[]) call inside getSystemInformation
-     * that fully replaced the right-side F3 debug lines with VulkanMod-specific stats. Embeddium's
-     * features.gui.hooks.debug.DebugHudMixin also @Redirects an ArrayList-returning call in the same method
-     * (redirectRightTextEarly) with required=1, which failed because our redirect had already replaced the
-     * target call. Rewritten as @Inject at RETURN that appends VulkanMod lines to the returned list, which
-     * (a) doesn't contend for any INVOKE site so Embeddium's mixin applies cleanly, and (b) merges both mods'
-     * additions in the on-screen output.
-     */
-    @Inject(method = "getSystemInformation", at = @At("RETURN"))
-    private void vulkan$appendSystemInformation(CallbackInfoReturnable<List<String>> cir) {
-        List<String> strings = cir.getReturnValue();
-        if (strings == null) return;
+    @Redirect(method = "getSystemInformation", at = @At(value = "INVOKE", target = "Lcom/google/common/collect/Lists;newArrayList([Ljava/lang/Object;)Ljava/util/ArrayList;"))
+    private ArrayList<String> redirectList(Object[] elements) {
+        ArrayList<String> strings = new ArrayList<>();
 
-        List<String> extra = new ArrayList<>();
-        try {
-            long maxMemory = Runtime.getRuntime().maxMemory();
-            long totalMemory = Runtime.getRuntime().totalMemory();
-            long freeMemory = Runtime.getRuntime().freeMemory();
-            long usedMemory = totalMemory - freeMemory;
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        long totalMemory = Runtime.getRuntime().totalMemory();
+        long freeMemory = Runtime.getRuntime().freeMemory();
+        long usedMemory = totalMemory - freeMemory;
 
-            Device device = Vulkan.getDevice();
+        Device device = Vulkan.getDevice();
 
-            extra.add("");
-            extra.add("VulkanMod " + getVersion());
-            if (device != null) {
-                extra.add("GPU: " + device.deviceName);
-                extra.add("Driver: " + device.driverVersion);
-                extra.add("Vulkan: " + device.vkVersion);
-            }
-            extra.add("CPU: " + SystemInfo.cpuInfo);
-            extra.add(String.format("Java: %s %dbit", System.getProperty("java.version"), this.minecraft.is64Bit() ? 64 : 32));
-            extra.add(String.format("Mem: % 2d%% %03d/%03dMB", usedMemory * 100L / maxMemory, bytesToMegabytes(usedMemory), bytesToMegabytes(maxMemory)));
-            extra.add(String.format("Allocated: % 2d%% %03dMB", totalMemory * 100L / maxMemory, bytesToMegabytes(totalMemory)));
-            extra.add("Off-heap: " + getOffHeapMemory() + "MB");
-            extra.add("NativeMemory: %dMB".formatted(MemoryManager.getInstance().getNativeMemoryMB()));
-            extra.add("DeviceMemory: %dMB".formatted(MemoryManager.getInstance().getAllocatedDeviceMemoryMB()));
-            if (WorldRenderer.getInstance() != null) {
-                Collections.addAll(extra, WorldRenderer.getInstance().getChunkAreaManager().getStats());
-            }
-        } catch (Throwable t) {
-            extra.add("VulkanMod: (debug info unavailable: " + t.getMessage() + ")");
-        }
+        strings.add(String.format("Java: %s %dbit", System.getProperty("java.version"), this.minecraft.is64Bit() ? 64 : 32));
+        strings.add(String.format("Mem: % 2d%% %03d/%03dMB", usedMemory * 100L / maxMemory, bytesToMegabytes(usedMemory), bytesToMegabytes(maxMemory)));
+        strings.add(String.format("Allocated: % 2d%% %03dMB", totalMemory * 100L / maxMemory, bytesToMegabytes(totalMemory)));
+        strings.add(String.format("Off-heap: " + getOffHeapMemory() + "MB"));
+        strings.add("NativeMemory: %dMB".formatted(MemoryManager.getInstance().getNativeMemoryMB()));
+        strings.add("DeviceMemory: %dMB".formatted(MemoryManager.getInstance().getAllocatedDeviceMemoryMB()));
+        strings.add("");
+        strings.add("VulkanMod " + getVersion());
+        strings.add("CPU: " + SystemInfo.cpuInfo);
+        strings.add("GPU: " + device.deviceName);
+        strings.add("Driver: " + device.driverVersion);
+        strings.add("Vulkan: " + device.vkVersion);
+        strings.add("");
+        strings.add("");
 
-        strings.addAll(extra);
+        Collections.addAll(strings, WorldRenderer.getInstance().getChunkAreaManager().getStats());
+
+        return strings;
     }
 
     private long getOffHeapMemory() {
