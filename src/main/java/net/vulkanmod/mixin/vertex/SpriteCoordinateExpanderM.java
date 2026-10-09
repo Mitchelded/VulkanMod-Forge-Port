@@ -27,6 +27,7 @@ public class SpriteCoordinateExpanderM implements ExtendedVertexBuilder {
 
     @Override
     public void vertex(float x, float y, float z, int packedColor, float u, float v, int overlay, int light, int packedNormal) {
-        this.extDelegate.vertex(x, y, z, packedColor, this.sprite.getU(u), this.sprite.getV(v), overlay, light, packedNormal);
+        // MC 1.20.1: TextureAtlasSprite.getU/getV take 0..16 (1.20.2+ take 0..1, which upstream VulkanMod assumes).
+        this.extDelegate.vertex(x, y, z, packedColor, this.sprite.getU(u * 16.0F), this.sprite.getV(v * 16.0F), overlay, light, packedNormal);
     }
 }
