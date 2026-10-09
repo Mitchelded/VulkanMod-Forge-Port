@@ -8,6 +8,16 @@ class SPIRVUtilsTest {
     private static final int SPIRV_MAGIC = 0x07230203;
 
     @Test
+    void compilesSourcesLargerThanTheLwjglStack() {
+        // shader packs (Complementary) produce sources far beyond LWJGL's MemoryStack; the tests' stack is 1 MiB
+        String padding = "// padding\n".repeat(150_000);
+        String source = "#version 450\n" + padding + "layout(location = 0) out vec4 color;\nvoid main() { color = vec4(1.0); }\n";
+        try (var spirv = SPIRVUtils.compileShader("big.fsh", source, SPIRVUtils.ShaderKind.FRAGMENT_SHADER)) {
+            assertEquals(SPIRV_MAGIC, spirv.bytecode().order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(0));
+        }
+    }
+
+    @Test
     void compilesTessellationStages() {
         String control = """
                 #version 450

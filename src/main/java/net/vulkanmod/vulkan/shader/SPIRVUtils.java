@@ -99,7 +99,18 @@ public class SPIRVUtils {
     public static SPIRV compileShader(String filename, String source, ShaderKind shaderKind) {
         long startTime = System.nanoTime();
 
-        long result = shaderc_compile_into_spv(compiler, source, shaderKind.kind, filename, "main", options);
+        // Heap buffers: the String overload encodes onto LWJGL's MemoryStack (64 KiB), which shader-pack sources exceed.
+        ByteBuffer sourceText = MemoryUtil.memUTF8(source, false);
+        ByteBuffer inputFileName = MemoryUtil.memUTF8(filename);
+        ByteBuffer entryPoint = MemoryUtil.memUTF8("main");
+        long result;
+        try {
+            result = shaderc_compile_into_spv(compiler, sourceText, shaderKind.kind, inputFileName, entryPoint, options);
+        } finally {
+            MemoryUtil.memFree(sourceText);
+            MemoryUtil.memFree(inputFileName);
+            MemoryUtil.memFree(entryPoint);
+        }
 
         if(result == NULL) {
             throw new RuntimeException("Failed to compile shader " + filename + " into SPIR-V");
