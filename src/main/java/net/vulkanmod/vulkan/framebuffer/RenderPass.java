@@ -4,10 +4,13 @@ import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.VRenderSystem;
 import net.vulkanmod.vulkan.Vulkan;
 import net.vulkanmod.vulkan.memory.MemoryManager;
+import net.vulkanmod.vulkan.texture.VulkanImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
 import java.nio.LongBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.lwjgl.vulkan.KHRSwapchain.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 import static org.lwjgl.vulkan.VK10.*;
@@ -17,21 +20,15 @@ public class RenderPass {
     long id;
 
     final int attachmentCount;
-    AttachmentInfo colorAttachmentInfo;
+    final List<AttachmentInfo> colorAttachmentInfos;
     AttachmentInfo depthAttachmentInfo;
 
-    public RenderPass(Framebuffer framebuffer, AttachmentInfo colorAttachmentInfo, AttachmentInfo depthAttachmentInfo) {
+    public RenderPass(Framebuffer framebuffer, List<AttachmentInfo> colorAttachmentInfos, AttachmentInfo depthAttachmentInfo) {
         this.framebuffer = framebuffer;
-        this.colorAttachmentInfo = colorAttachmentInfo;
+        this.colorAttachmentInfos = colorAttachmentInfos;
         this.depthAttachmentInfo = depthAttachmentInfo;
 
-        int count = 0;
-        if (colorAttachmentInfo != null)
-            count++;
-        if (depthAttachmentInfo != null)
-            count++;
-
-        this.attachmentCount = count;
+        this.attachmentCount = colorAttachmentInfos.size() + (depthAttachmentInfo != null ? 1 : 0);
 
         if (!Vulkan.DYNAMIC_RENDERING) {
             framebuffer.addRenderPass(this);
@@ -52,8 +49,9 @@ public class RenderPass {
 
             int i = 0;
 
-            // Color attachment
-            if (colorAttachmentInfo != null) {
+            // Color attachments: attachment i is fragment output location i
+            VkAttachmentReference.Buffer colorAttachmentRefs = VkAttachmentReference.calloc(colorAttachmentInfos.size(), stack);
+            for (AttachmentInfo colorAttachmentInfo : colorAttachmentInfos) {
                 VkAttachmentDescription colorAttachment = attachments.get(i);
                 colorAttachment.format(colorAttachmentInfo.format)
                         .samples(VK_SAMPLE_COUNT_1_BIT)
@@ -64,15 +62,14 @@ public class RenderPass {
                         .initialLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
                         .finalLayout(colorAttachmentInfo.finalLayout);
 
-                VkAttachmentReference colorAttachmentRef = attachmentRefs.get(0)
-                        .attachment(0)
+                colorAttachmentRefs.get(i)
+                        .attachment(i)
                         .layout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-                subpass.colorAttachmentCount(1);
-                subpass.pColorAttachments(VkAttachmentReference.calloc(1, stack).put(0, colorAttachmentRef));
 
                 ++i;
             }
+            subpass.colorAttachmentCount(colorAttachmentInfos.size());
+            subpass.pColorAttachments(colorAttachmentRefs);
 
             // Depth-Stencil attachment
             if (depthAttachmentInfo != null) {
@@ -86,8 +83,8 @@ public class RenderPass {
                         .initialLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                         .finalLayout(depthAttachmentInfo.finalLayout);
 
-                VkAttachmentReference depthAttachmentRef = attachmentRefs.get(1)
-                        .attachment(1)
+                VkAttachmentReference depthAttachmentRef = attachmentRefs.get(i)
+                        .attachment(i)
                         .layout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
                 subpass.pDepthStencilAttachment(depthAttachmentRef);
@@ -99,7 +96,8 @@ public class RenderPass {
                     .pSubpasses(subpass);
 
             //Layout transition subpass depency
-            switch (colorAttachmentInfo.finalLayout) {
+            int colorFinalLayout = colorAttachmentInfos.isEmpty() ? VK_IMAGE_LAYOUT_UNDEFINED : colorAttachmentInfos.get(0).finalLayout;
+            switch (colorFinalLayout) {
                 case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR -> {
                     VkSubpassDependency.Buffer subpassDependencies = VkSubpassDependency.calloc(1, stack);
                     subpassDependencies.get(0)
@@ -138,9 +136,10 @@ public class RenderPass {
 
     public void beginRenderPass(VkCommandBuffer commandBuffer, long framebufferId, MemoryStack stack) {
 
-        if (colorAttachmentInfo != null
-                && framebuffer.getColorAttachment().getCurrentLayout() != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-            framebuffer.getColorAttachment().transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        if (!colorAttachmentInfos.isEmpty())
+            for (VulkanImage colorAttachment : framebuffer.getColorAttachments())
+                if (colorAttachment.getCurrentLayout() != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+                    colorAttachment.transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         if (depthAttachmentInfo != null
                 && framebuffer.getDepthAttachment().getCurrentLayout() != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
             framebuffer.getDepthAttachment().transitionImageLayout(stack, commandBuffer, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
@@ -155,9 +154,12 @@ public class RenderPass {
         renderArea.extent().set(framebuffer.getWidth(), framebuffer.getHeight());
         renderPassInfo.renderArea(renderArea);
 
-        VkClearValue.Buffer clearValues = VkClearValue.malloc(2, stack);
-        clearValues.get(0).color().float32(VRenderSystem.clearColor);
-        clearValues.get(1).depthStencil().set(1.0f, 0);
+        // one clear value per attachment, indexed like the attachments
+        VkClearValue.Buffer clearValues = VkClearValue.malloc(attachmentCount, stack);
+        for (int i = 0; i < colorAttachmentInfos.size(); i++)
+            clearValues.get(i).color().float32(VRenderSystem.clearColor);
+        if (depthAttachmentInfo != null)
+            clearValues.get(colorAttachmentInfos.size()).depthStencil().set(1.0f, 0);
 
         renderPassInfo.pClearValues(clearValues);
 
@@ -169,8 +171,9 @@ public class RenderPass {
     public void endRenderPass(VkCommandBuffer commandBuffer) {
         vkCmdEndRenderPass(commandBuffer);
 
-        if (colorAttachmentInfo != null)
-            framebuffer.getColorAttachment().setCurrentLayout(colorAttachmentInfo.finalLayout);
+        List<VulkanImage> colorAttachments = framebuffer.getColorAttachments();
+        for (int i = 0; i < colorAttachmentInfos.size(); i++)
+            colorAttachments.get(i).setCurrentLayout(colorAttachmentInfos.get(i).finalLayout);
 
         if (depthAttachmentInfo != null)
             framebuffer.getDepthAttachment().setCurrentLayout(depthAttachmentInfo.finalLayout);
@@ -192,8 +195,9 @@ public class RenderPass {
         renderingInfo.renderArea(renderArea);
         renderingInfo.layerCount(1);
 
-        // Color attachment
-        if (colorAttachmentInfo != null) {
+        // Color attachment (dynamic rendering is disabled; only the first attachment is supported here)
+        if (!colorAttachmentInfos.isEmpty()) {
+            AttachmentInfo colorAttachmentInfo = colorAttachmentInfos.get(0);
             VkRenderingAttachmentInfo.Buffer colorAttachment = VkRenderingAttachmentInfo.calloc(1, stack);
             colorAttachment.sType(KHRDynamicRendering.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR);
             colorAttachment.imageView(framebuffer.getColorAttachment().getImageView());
@@ -227,6 +231,10 @@ public class RenderPass {
 
     public Framebuffer getFramebuffer() {
         return framebuffer;
+    }
+
+    public int getColorAttachmentCount() {
+        return colorAttachmentInfos.size();
     }
 
     public void cleanUp() {
@@ -295,26 +303,24 @@ public class RenderPass {
 
     public static class Builder {
         Framebuffer framebuffer;
-        AttachmentInfo colorAttachmentInfo;
+        List<AttachmentInfo> colorAttachmentInfos = new ArrayList<>();
         AttachmentInfo depthAttachmentInfo;
 
         public Builder(Framebuffer framebuffer) {
             this.framebuffer = framebuffer;
 
-            if (framebuffer.hasColorAttachment)
-                colorAttachmentInfo = new AttachmentInfo(AttachmentInfo.Type.COLOR, framebuffer.format).setOps(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE);
+            for (int format : framebuffer.hasColorAttachment ? framebuffer.getFormats() : new int[0])
+                colorAttachmentInfos.add(new AttachmentInfo(AttachmentInfo.Type.COLOR, format).setOps(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE));
             if (framebuffer.hasDepthAttachment)
                 depthAttachmentInfo = new AttachmentInfo(AttachmentInfo.Type.DEPTH, framebuffer.depthFormat).setOps(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE);
         }
 
         public RenderPass build() {
-            return new RenderPass(framebuffer, colorAttachmentInfo, depthAttachmentInfo);
+            return new RenderPass(framebuffer, colorAttachmentInfos, depthAttachmentInfo);
         }
 
         public Builder setLoadOp(int loadOp) {
-            if (colorAttachmentInfo != null) {
-                colorAttachmentInfo.setLoadOp(loadOp);
-            }
+            colorAttachmentInfos.forEach(info -> info.setLoadOp(loadOp));
             if (depthAttachmentInfo != null) {
                 depthAttachmentInfo.setLoadOp(loadOp);
             }
@@ -323,8 +329,13 @@ public class RenderPass {
             return this;
         }
 
+        /** The first color attachment (the only one for single-target framebuffers). */
         public AttachmentInfo getColorAttachmentInfo() {
-            return colorAttachmentInfo;
+            return colorAttachmentInfos.isEmpty() ? null : colorAttachmentInfos.get(0);
+        }
+
+        public List<AttachmentInfo> getColorAttachmentInfos() {
+            return colorAttachmentInfos;
         }
 
         public AttachmentInfo getDepthAttachmentInfo() {

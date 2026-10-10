@@ -562,50 +562,42 @@ public class Renderer {
     }
 
     public static void clearAttachments(int v, int width, int height) {
-        // Stencil is not emulated; ignore GL_STENCIL_BUFFER_BIT (0x400)
-        v &= ~0x400;
-        if (skipRendering || v == 0)
+        if (skipRendering)
             return;
 
+        clearAttachments(INSTANCE.currentCmdBuffer, INSTANCE.boundFramebuffer, v, width, height);
+    }
+
+    /** {@code glClear} inside the current render pass of {@code framebuffer}: every color attachment and/or depth. */
+    public static void clearAttachments(VkCommandBuffer commandBuffer, Framebuffer framebuffer, int v) {
+        clearAttachments(commandBuffer, framebuffer, v, framebuffer.getWidth(), framebuffer.getHeight());
+    }
+
+    private static void clearAttachments(VkCommandBuffer commandBuffer, Framebuffer framebuffer, int v, int width, int height) {
+        // Stencil is not emulated; ignore GL_STENCIL_BUFFER_BIT (0x400)
+        v &= ~0x400;
+        if (v == 0)
+            return;
+        if ((v & ~(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT)) != 0)
+            throw new RuntimeException("unexpected value");
+
+        boolean color = (v & GL_COLOR_BUFFER_BIT) != 0;
+        boolean depth = (v & GL_DEPTH_BUFFER_BIT) != 0;
+        int colorCount = color ? Math.max(1, framebuffer != null ? framebuffer.getColorAttachmentCount() : 1) : 0;
+
         try (MemoryStack stack = stackPush()) {
-            //ClearValues have to be different for each attachment to clear,
-            //it seems it uses the same buffer: color and depth values override themselves
-            VkClearValue colorValue = VkClearValue.calloc(stack);
-            colorValue.color().float32(VRenderSystem.clearColor);
-
-            VkClearValue depthValue = VkClearValue.calloc(stack);
-            depthValue.depthStencil().set(VRenderSystem.clearDepthValue, 0); //Use fast depth clears if possible
-
-            int attachmentsCount = v == (GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT) ? 2 : 1;
-            final VkClearAttachment.Buffer pAttachments = VkClearAttachment.malloc(attachmentsCount, stack);
-            switch (v) {
-                case GL_DEPTH_BUFFER_BIT -> {
-
-                    VkClearAttachment clearDepth = pAttachments.get(0);
-                    clearDepth.aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT);
-                    clearDepth.colorAttachment(0);
-                    clearDepth.clearValue(depthValue);
-                }
-                case GL_COLOR_BUFFER_BIT -> {
-
-                    VkClearAttachment clearColor = pAttachments.get(0);
-                    clearColor.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
-                    clearColor.colorAttachment(0);
-                    clearColor.clearValue(colorValue);
-                }
-                case GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT -> {
-
-                    VkClearAttachment clearColor = pAttachments.get(0);
-                    clearColor.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
-                    clearColor.colorAttachment(0);
-                    clearColor.clearValue(colorValue);
-
-                    VkClearAttachment clearDepth = pAttachments.get(1);
-                    clearDepth.aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT);
-                    clearDepth.colorAttachment(0);
-                    clearDepth.clearValue(depthValue);
-                }
-                default -> throw new RuntimeException("unexpected value");
+            final VkClearAttachment.Buffer pAttachments = VkClearAttachment.calloc(colorCount + (depth ? 1 : 0), stack);
+            for (int i = 0; i < colorCount; i++) {
+                VkClearAttachment clearColor = pAttachments.get(i);
+                clearColor.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+                clearColor.colorAttachment(i);
+                clearColor.clearValue().color().float32(VRenderSystem.clearColor);
+            }
+            if (depth) {
+                VkClearAttachment clearDepth = pAttachments.get(colorCount);
+                clearDepth.aspectMask(VK_IMAGE_ASPECT_DEPTH_BIT);
+                clearDepth.colorAttachment(0);
+                clearDepth.clearValue().depthStencil().set(VRenderSystem.clearDepthValue, 0); //Use fast depth clears if possible
             }
 
             //Rect to clear
@@ -618,7 +610,7 @@ public class Renderer {
             pRect.baseArrayLayer(0);
             pRect.layerCount(1);
 
-            vkCmdClearAttachments(INSTANCE.currentCmdBuffer, pAttachments, pRect);
+            vkCmdClearAttachments(commandBuffer, pAttachments, pRect);
         }
     }
 

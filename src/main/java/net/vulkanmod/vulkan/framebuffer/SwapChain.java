@@ -268,6 +268,11 @@ public class SwapChain extends Framebuffer {
         return this.swapChainImages.get(Renderer.getCurrentImage());
     }
 
+    @Override
+    public List<VulkanImage> getColorAttachments() {
+        return List.of(getColorAttachment());
+    }
+
     public long getImageView(int i) {
         return this.swapChainImages.get(i).getImageView();
     }

@@ -12,6 +12,7 @@ import org.lwjgl.vulkan.*;
 
 import java.nio.LongBuffer;
 import java.util.Arrays;
+import java.util.List;
 
 import static net.vulkanmod.vulkan.Vulkan.DYNAMIC_RENDERING;
 import static org.lwjgl.vulkan.VK10.*;
@@ -31,7 +32,7 @@ public class Framebuffer {
     boolean hasColorAttachment;
     boolean hasDepthAttachment;
 
-    private VulkanImage colorAttachment;
+    private List<VulkanImage> colorAttachments = List.of();
     protected VulkanImage depthAttachment;
 
     private final ObjectArrayList<RenderPass> renderPasses = new ObjectArrayList<>();
@@ -54,7 +55,7 @@ public class Framebuffer {
         if (builder.createImages)
             this.createImages();
         else {
-            this.colorAttachment = builder.colorAttachment;
+            this.colorAttachments = builder.colorAttachments;
             this.depthAttachment = builder.depthAttachment;
         }
     }
@@ -65,12 +66,12 @@ public class Framebuffer {
 
     public void createImages() {
         if (this.hasColorAttachment) {
-            this.colorAttachment = VulkanImage.builder(this.width, this.height)
+            this.colorAttachments = List.of(VulkanImage.builder(this.width, this.height)
                     .setFormat(format)
                     .setUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)
                     .setLinearFiltering(linearFiltering)
                     .setClamp(true)
-                    .createVulkanImage();
+                    .createVulkanImage());
         }
 
         if (this.hasDepthAttachment) {
@@ -95,14 +96,12 @@ public class Framebuffer {
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
 
-            LongBuffer attachments;
-            if (colorAttachment != null && depthAttachment != null) {
-                attachments = stack.longs(colorAttachment.getImageView(), depthAttachment.getImageView());
-            } else if (colorAttachment != null) {
-                attachments = stack.longs(colorAttachment.getImageView());
-            } else {
-                throw new IllegalStateException();
-            }
+            LongBuffer attachments = stack.mallocLong(colorAttachments.size() + (depthAttachment != null ? 1 : 0));
+            for (VulkanImage colorAttachment : colorAttachments)
+                attachments.put(colorAttachment.getImageView());
+            if (depthAttachment != null)
+                attachments.put(depthAttachment.getImageView());
+            attachments.flip();
 
             LongBuffer pFramebuffer = stack.mallocLong(1);
 
@@ -160,8 +159,7 @@ public class Framebuffer {
 
     public void cleanUp(boolean cleanImages) {
         if (cleanImages) {
-            if (this.colorAttachment != null)
-                this.colorAttachment.free();
+            this.colorAttachments.forEach(VulkanImage::free);
 
             if (this.depthAttachment != null)
                 this.depthAttachment.free();
@@ -188,7 +186,20 @@ public class Framebuffer {
     }
 
     public VulkanImage getColorAttachment() {
-        return colorAttachment;
+        return colorAttachments.isEmpty() ? null : colorAttachments.get(0);
+    }
+
+    /** All color attachments in attachment (fragment output location) order. */
+    public List<VulkanImage> getColorAttachments() {
+        return colorAttachments;
+    }
+
+    public int getColorAttachmentCount() {
+        return hasColorAttachment ? getColorAttachments().size() : 0;
+    }
+
+    public int[] getFormats() {
+        return getColorAttachments().stream().mapToInt(image -> image.format).toArray();
     }
 
     public int getWidth() {
@@ -212,7 +223,12 @@ public class Framebuffer {
     }
 
     public static Builder builder(VulkanImage colorAttachment, VulkanImage depthAttachment) {
-        return new Builder(colorAttachment, depthAttachment);
+        return new Builder(List.of(colorAttachment), depthAttachment);
+    }
+
+    /** Framebuffer over existing images: color attachment i receives fragment output location i. */
+    public static Builder builder(List<VulkanImage> colorAttachments, VulkanImage depthAttachment) {
+        return new Builder(colorAttachments, depthAttachment);
     }
 
     public static class Builder {
@@ -220,7 +236,7 @@ public class Framebuffer {
         final int width, height;
         int format, depthFormat;
 
-        VulkanImage colorAttachment;
+        List<VulkanImage> colorAttachments = List.of();
         VulkanImage depthAttachment;
 
 //        int colorAttachments;
@@ -248,15 +264,20 @@ public class Framebuffer {
             this.hasDepthAttachment = hasDepthAttachment;
         }
 
-        public Builder(VulkanImage colorAttachment, VulkanImage depthAttachment) {
+        public Builder(List<VulkanImage> colorAttachments, VulkanImage depthAttachment) {
+            Validate.isTrue(!colorAttachments.isEmpty(), "At least 1 color attachment needed");
+            VulkanImage first = colorAttachments.get(0);
+            Validate.isTrue(colorAttachments.stream().allMatch(image -> image.width == first.width && image.height == first.height),
+                    "Color attachments must have the same size");
+
             this.createImages = false;
-            this.colorAttachment = colorAttachment;
+            this.colorAttachments = List.copyOf(colorAttachments);
             this.depthAttachment = depthAttachment;
 
-            this.format = colorAttachment.format;
+            this.format = first.format;
 
-            this.width = colorAttachment.width;
-            this.height = colorAttachment.height;
+            this.width = first.width;
+            this.height = first.height;
             this.hasColorAttachment = true;
             this.hasDepthAttachment = depthAttachment != null;
 
