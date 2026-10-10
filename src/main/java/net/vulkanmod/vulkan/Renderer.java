@@ -619,13 +619,18 @@ public class Renderer {
             return;
 
         try (MemoryStack stack = stackPush()) {
-            VkViewport.Buffer viewport = VkViewport.malloc(1, stack);
-            viewport.x(x);
-            viewport.y(height + y);
-            viewport.width(width);
-            viewport.height(-height);
-            viewport.minDepth(0.0f);
-            viewport.maxDepth(1.0f);
+            VkViewport.Buffer viewport;
+            if (INSTANCE.boundFramebuffer != null) {
+                viewport = INSTANCE.boundFramebuffer.viewport(stack, x, y, width, height);
+            } else {
+                viewport = VkViewport.malloc(1, stack);
+                viewport.x(x);
+                viewport.y(height + y);
+                viewport.width(width);
+                viewport.height(-height);
+                viewport.minDepth(0.0f);
+                viewport.maxDepth(1.0f);
+            }
 
             VkRect2D.Buffer scissor = VkRect2D.malloc(1, stack);
             scissor.offset().set(0, 0);
@@ -658,13 +663,7 @@ public class Renderer {
             return;
 
         try (MemoryStack stack = stackPush()) {
-            int framebufferHeight = INSTANCE.boundFramebuffer.getHeight();
-
-            VkRect2D.Buffer scissor = VkRect2D.malloc(1, stack);
-            scissor.offset().set(x, framebufferHeight - (y + height));
-            scissor.extent().set(width, height);
-
-            vkCmdSetScissor(INSTANCE.currentCmdBuffer, 0, scissor);
+            vkCmdSetScissor(INSTANCE.currentCmdBuffer, 0, INSTANCE.boundFramebuffer.scissor(stack, x, y, width, height));
         }
     }
 

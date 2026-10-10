@@ -32,6 +32,9 @@ public class Framebuffer {
     boolean hasColorAttachment;
     boolean hasDepthAttachment;
 
+    /** OpenGL memory layout: row 0 = bottom of clip space (positive viewport, clockwise front faces). */
+    private boolean glLayout;
+
     private List<VulkanImage> colorAttachments = List.of();
     protected VulkanImage depthAttachment;
 
@@ -133,12 +136,34 @@ public class Framebuffer {
         Renderer.getInstance().setBoundFramebuffer(this);
     }
 
+    /**
+     * Shader-pack render targets use OpenGL's memory layout so that pack shaders need no gl_FragCoord or texture
+     * coordinate patching; the image is flipped once when presented.
+     */
+    public Framebuffer setGlLayout(boolean glLayout) {
+        this.glLayout = glLayout;
+        return this;
+    }
+
+    public boolean isGlLayout() {
+        return glLayout;
+    }
+
     public VkViewport.Buffer viewport(MemoryStack stack) {
+        return viewport(stack, 0, 0, this.width, this.height);
+    }
+
+    /** A {@code glViewport} rectangle (origin bottom-left) on this framebuffer. */
+    public VkViewport.Buffer viewport(MemoryStack stack, int x, int y, int width, int height) {
+        return viewport(stack, glLayout, x, y, width, height);
+    }
+
+    static VkViewport.Buffer viewport(MemoryStack stack, boolean glLayout, int x, int y, int width, int height) {
         VkViewport.Buffer viewport = VkViewport.malloc(1, stack);
-        viewport.x(0.0f);
-        viewport.y(this.height);
-        viewport.width(this.width);
-        viewport.height(-this.height);
+        viewport.x(x);
+        viewport.y(glLayout ? y : y + height);
+        viewport.width(width);
+        viewport.height(glLayout ? height : -height);
         viewport.minDepth(0.0f);
         viewport.maxDepth(1.0f);
 
@@ -146,9 +171,18 @@ public class Framebuffer {
     }
 
     public VkRect2D.Buffer scissor(MemoryStack stack) {
+        return scissor(stack, 0, 0, this.width, this.height);
+    }
+
+    /** A {@code glScissor} rectangle (origin bottom-left) on this framebuffer. */
+    public VkRect2D.Buffer scissor(MemoryStack stack, int x, int y, int width, int height) {
+        return scissor(stack, glLayout, this.height, x, y, width, height);
+    }
+
+    static VkRect2D.Buffer scissor(MemoryStack stack, boolean glLayout, int framebufferHeight, int x, int y, int width, int height) {
         VkRect2D.Buffer scissor = VkRect2D.malloc(1, stack);
-        scissor.offset().set(0, 0);
-        scissor.extent().set(this.width, this.height);
+        scissor.offset().set(x, glLayout ? y : framebufferHeight - (y + height));
+        scissor.extent().set(width, height);
 
         return scissor;
     }

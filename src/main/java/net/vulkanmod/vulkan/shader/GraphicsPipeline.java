@@ -111,7 +111,9 @@ public class GraphicsPipeline extends Pipeline {
             rasterizer.polygonMode(polygonMode);
             rasterizer.lineWidth(1.0f);
             rasterizer.cullMode(cullMode);
-            rasterizer.frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE);
+            // GL counter-clockwise front faces: CCW with VulkanMod's flipped viewport, CW in GL-layout framebuffers
+            boolean glLayout = state.renderPass != null && state.renderPass.getFramebuffer().isGlLayout();
+            rasterizer.frontFace(glLayout ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
             rasterizer.depthBiasEnable(true);
 
             // ===> MULTISAMPLING <===

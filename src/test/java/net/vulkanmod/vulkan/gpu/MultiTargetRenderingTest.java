@@ -148,6 +148,89 @@ class MultiTargetRenderingTest {
         }
     }
 
+    static final String NDC_HALVES = """
+            #version 450
+            layout(location = 0) in float ndcY;
+            layout(location = 0) out vec4 color;
+            void main() { color = ndcY < 0.0 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0); }
+            """;
+
+    static final String FULLSCREEN_TRIANGLE_WITH_NDC_Y = """
+            #version 450
+            layout(location = 0) out float ndcY;
+            void main() {
+                vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0;
+                ndcY = p.y;
+                gl_Position = vec4(p, 0.0, 1.0);
+            }
+            """;
+
+    @Test
+    void glLayoutStoresTheBottomOfClipSpaceInTheFirstMemoryRows() {
+        VulkanImage gl = target(VK_FORMAT_R8G8B8A8_UNORM);
+        Framebuffer glFramebuffer = Framebuffer.builder(List.of(gl), null).build().setGlLayout(true);
+        draw(glFramebuffer, RenderPass.builder(glFramebuffer).build(), program(FULLSCREEN_TRIANGLE_WITH_NDC_Y, NDC_HALVES));
+        ByteBuffer glPixels = readback(gl, 4);
+        assertEquals(0xFF0000FF, rgba8(glPixels, SIZE, 0, 0), "row 0 = clip-space bottom, like OpenGL");
+        assertEquals(0x00FF00FF, rgba8(glPixels, SIZE, 0, SIZE - 1));
+        MemoryUtil.memFree(glPixels);
+
+        // VulkanMod's own targets keep row 0 = top
+        VulkanImage vk = target(VK_FORMAT_R8G8B8A8_UNORM);
+        Framebuffer vkFramebuffer = Framebuffer.builder(List.of(vk), null).build();
+        draw(vkFramebuffer, RenderPass.builder(vkFramebuffer).build(), program(FULLSCREEN_TRIANGLE_WITH_NDC_Y, NDC_HALVES));
+        ByteBuffer vkPixels = readback(vk, 4);
+        assertEquals(0x00FF00FF, rgba8(vkPixels, SIZE, 0, 0));
+        MemoryUtil.memFree(vkPixels);
+    }
+
+    /** A GL counter-clockwise (front) triangle and a clockwise one, both covering the center, with back faces culled. */
+    static String centerTriangle(boolean counterClockwise) {
+        String vertices = counterClockwise ? "vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0)"
+                : "vec2(-1.0, -1.0), vec2(-1.0, 3.0), vec2(3.0, -1.0)";
+        return "#version 450\nvoid main() { vec2 p[3] = vec2[3](" + vertices + "); gl_Position = vec4(p[gl_VertexIndex], 0.0, 1.0); }\n";
+    }
+
+    static final String WHITE = """
+            #version 450
+            layout(location = 0) out vec4 color;
+            void main() { color = vec4(1.0); }
+            """;
+
+    @Test
+    void glLayoutKeepsOpenGlFrontFacesWithBackFaceCulling() {
+        for (boolean glLayout : new boolean[]{true, false}) {
+            for (boolean counterClockwise : new boolean[]{true, false}) {
+                VulkanImage image = target(VK_FORMAT_R8G8B8A8_UNORM);
+                Framebuffer framebuffer = Framebuffer.builder(List.of(image), null).build().setGlLayout(glLayout);
+                VRenderSystem.setClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+                drawCulled(framebuffer, RenderPass.builder(framebuffer).build(), program(centerTriangle(counterClockwise), WHITE));
+                ByteBuffer pixels = readback(image, 4);
+                assertEquals(counterClockwise ? 0xFFFFFFFF : 0, rgba8(pixels, SIZE, SIZE / 2, SIZE / 2),
+                        "glLayout=" + glLayout + " counterClockwise=" + counterClockwise);
+                MemoryUtil.memFree(pixels);
+            }
+        }
+    }
+
+    static void drawCulled(Framebuffer framebuffer, RenderPass renderPass, GraphicsPipeline pipeline) {
+        VRenderSystem.enableCull();
+        VRenderSystem.disableDepthTest();
+        submit(commandBuffer -> {
+            try (MemoryStack stack = stackPush()) {
+                framebuffer.beginRenderPass(commandBuffer, renderPass, stack);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getHandle(PipelineState.getCurrentPipelineState(renderPass)));
+                pipeline.bindDescriptorSets(commandBuffer, Renderer.getDrawer().getUniformBuffer(), 0);
+                vkCmdSetViewport(commandBuffer, 0, framebuffer.viewport(stack));
+                vkCmdSetScissor(commandBuffer, 0, framebuffer.scissor(stack));
+                vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
+                vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+                renderPass.endRenderPass(commandBuffer);
+            }
+        });
+        VRenderSystem.disableCull();
+    }
+
     @Test
     void clearsASingleAttachmentFramebuffer() {
         VulkanImage color = target(VK_FORMAT_R8G8B8A8_UNORM);
