@@ -1,7 +1,7 @@
 # Sub-project 2 — Multi-target rendering for shader-pack programs in VulkanMod
 
 Date: 2026-10-10
-Status: decided by Claude (user delegated design decisions)
+Status: implemented on branch mrt-programs (2026-10-10); GPU tests + in-game smoke test pass
 Overall project: Iris/OptiFine shader packs on this VulkanMod Forge port, through the `oculus-vulkan` fork
 (`C:\Users\trety\Desktop\mods\oculus-vulkan`). Sub-project 1 (pack GLSL → Vulkan SPIR-V + `ProgramLayout`) is done.
 
