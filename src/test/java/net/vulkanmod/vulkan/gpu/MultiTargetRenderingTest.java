@@ -363,6 +363,46 @@ class MultiTargetRenderingTest {
     }
 
     @Test
+    void aLaterPassSamplesAnEarlierAttachmentThroughAHighTextureUnit() {
+        // pass 1: two attachments that end the render pass ready for sampling (like Iris's colortex between passes)
+        VulkanImage first = target(VK_FORMAT_R8G8B8A8_UNORM);
+        VulkanImage second = target(VK_FORMAT_R8G8B8A8_UNORM);
+        Framebuffer gbuffers = Framebuffer.builder(List.of(first, second), null).build().setGlLayout(true);
+        RenderPass.Builder passBuilder = RenderPass.builder(gbuffers);
+        passBuilder.getColorAttachmentInfos().forEach(info -> info.setFinalLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+        draw(gbuffers, passBuilder.build(), program(FULLSCREEN_TRIANGLE, """
+                #version 450
+                layout(location = 0) out vec4 a;
+                layout(location = 1) out vec4 b;
+                void main() { a = vec4(1.0); b = vec4(1.0, 0.0, 1.0, 1.0); }
+                """));
+        assertEquals(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, first.getCurrentLayout());
+        assertEquals(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, second.getCurrentLayout());
+
+        // pass 2: sample attachment 1 through texture unit 20, scale it by a uniform
+        VTextureSelector.bindTexture(20, second);
+        UNIFORMS.put(0, 0.5f);
+        Pipeline.Builder builder = new Pipeline.Builder(CustomVertexFormat.NONE);
+        ManualUBO ubo = new ManualUBO(0, VK_SHADER_STAGE_ALL_GRAPHICS, 4);
+        ubo.setSrc(MemoryUtil.memAddress(UNIFORMS), 16);
+        builder.setUniforms(new ArrayList<>(List.of(ubo)), new ArrayList<>(List.of(new ImageDescriptor(1, "sampler2D", "colortex1", 20))));
+        builder.setSPIRVs(glsl("test.vsh", FULLSCREEN_TRIANGLE, SPIRVUtils.ShaderKind.VERTEX_SHADER), glsl("test.fsh", """
+                #version 450
+                layout(std140, set = 0, binding = 0) uniform U { vec4 values; };
+                layout(set = 0, binding = 1) uniform sampler2D colortex1;
+                layout(location = 0) out vec4 color;
+                void main() { color = vec4(texture(colortex1, vec2(0.5)).rgb * values.x, 1.0); }
+                """, SPIRVUtils.ShaderKind.FRAGMENT_SHADER));
+
+        int pixel = centerPixel(drawWith(builder.createGraphicsPipeline()));
+        UNIFORMS.put(0, 0.0f);
+        // 0.5 * 255 = 127.5: UNORM conversion may round either way
+        assertEquals(0x80, pixel >>> 24, 1, "red = 1.0 * 0.5");
+        assertEquals(0x00, pixel >>> 16 & 0xFF);
+        assertEquals(0x80, pixel >>> 8 & 0xFF, 1, "blue = 1.0 * 0.5");
+    }
+
+    @Test
     void clearsASingleAttachmentFramebuffer() {
         VulkanImage color = target(VK_FORMAT_R8G8B8A8_UNORM);
         Framebuffer framebuffer = Framebuffer.builder(color, null).build();

@@ -9,7 +9,8 @@ import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
 import java.nio.ByteBuffer;
 
 public abstract class VTextureSelector {
-    public static final int SIZE = 12;
+    // GL_MAX_TEXTURE_IMAGE_UNITS of desktop drivers; shader packs sample colortex/depthtex/shadowtex/noisetex... at once
+    public static final int SIZE = 32;
 
     private static final VulkanImage[] boundTextures = new VulkanImage[SIZE];
 

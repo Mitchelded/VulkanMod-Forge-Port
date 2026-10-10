@@ -73,8 +73,12 @@ final class GpuTestContext {
     /** Records commands into VulkanMod's immediate command buffer, submits and waits. */
     static void submit(Consumer<VkCommandBuffer> commands) {
         VkCommandBuffer commandBuffer = Vulkan.beginImmediateCmd();
-        commands.accept(commandBuffer);
-        Vulkan.endImmediateCmd();
+        try {
+            commands.accept(commandBuffer);
+        } finally {
+            // never leave the shared immediate command buffer recording: a failing test must not break the next one
+            Vulkan.endImmediateCmd();
+        }
     }
 
     static SPIRVUtils.SPIRV glsl(String name, String source, SPIRVUtils.ShaderKind kind) {
