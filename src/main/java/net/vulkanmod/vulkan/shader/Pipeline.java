@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 
 import static net.vulkanmod.vulkan.shader.SPIRVUtils.compileShader;
 import static net.vulkanmod.vulkan.shader.SPIRVUtils.compileShaderResource;
@@ -110,9 +111,11 @@ public abstract class Pipeline {
             int bindingsSize = this.buffers.size() + imageDescriptors.size();
 
             VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(bindingsSize, stack);
+            // entries in declaration order; binding numbers may have gaps (shader-pack programs without a uniform block start at 1)
+            int i = 0;
 
             for (UBO ubo : this.buffers) {
-                VkDescriptorSetLayoutBinding uboLayoutBinding = bindings.get(ubo.getBinding());
+                VkDescriptorSetLayoutBinding uboLayoutBinding = bindings.get(i++);
                 uboLayoutBinding.binding(ubo.getBinding());
                 uboLayoutBinding.descriptorCount(1);
                 uboLayoutBinding.descriptorType(ubo.getType());
@@ -121,7 +124,7 @@ public abstract class Pipeline {
             }
 
             for (ImageDescriptor imageDescriptor : this.imageDescriptors) {
-                VkDescriptorSetLayoutBinding samplerLayoutBinding = bindings.get(imageDescriptor.getBinding());
+                VkDescriptorSetLayoutBinding samplerLayoutBinding = bindings.get(i++);
                 samplerLayoutBinding.binding(imageDescriptor.getBinding());
                 samplerLayoutBinding.descriptorCount(1);
                 samplerLayoutBinding.descriptorType(imageDescriptor.getType());
@@ -514,7 +517,9 @@ public abstract class Pipeline {
         int nextBinding;
 
         SPIRV vertShaderSPIRV;
+        SPIRV geomShaderSPIRV;
         SPIRV fragShaderSPIRV;
+        Map<String, Integer> attributeLocations;
 
         RenderPass renderPass;
 
@@ -546,6 +551,16 @@ public abstract class Pipeline {
         public void setSPIRVs(SPIRV vertShaderSPIRV, SPIRV fragShaderSPIRV) {
             this.vertShaderSPIRV = vertShaderSPIRV;
             this.fragShaderSPIRV = fragShaderSPIRV;
+        }
+
+        /** Optional geometry stage (shader-pack programs). */
+        public void setGeometrySPIRV(SPIRV geomShaderSPIRV) {
+            this.geomShaderSPIRV = geomShaderSPIRV;
+        }
+
+        /** Vertex input locations by attribute name instead of the vertex format's element order. */
+        public void setAttributeLocations(Map<String, Integer> attributeLocations) {
+            this.attributeLocations = attributeLocations;
         }
 
         public void compileShaders() {

@@ -157,6 +157,8 @@ public abstract class DeviceManager {
             deviceFeatures.sType$Default();
             deviceFeatures.features().samplerAnisotropy(device.availableFeatures.features().samplerAnisotropy());
             deviceFeatures.features().logicOp(device.availableFeatures.features().logicOp());
+            // shader-pack programs may have a geometry stage
+            deviceFeatures.features().geometryShader(device.availableFeatures.features().geometryShader());
             // TODO: Disable indirect draw option if unsupported.
             deviceFeatures.features().multiDrawIndirect(device.isDrawIndirectSupported());
 

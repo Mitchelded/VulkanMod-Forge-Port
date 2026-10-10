@@ -1,5 +1,6 @@
 package net.vulkanmod.vulkan.gpu;
 
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import net.vulkanmod.render.vertex.CustomVertexFormat;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.Vulkan;
@@ -10,7 +11,9 @@ import net.vulkanmod.vulkan.shader.GraphicsPipeline;
 import net.vulkanmod.vulkan.shader.Pipeline;
 import net.vulkanmod.vulkan.shader.PipelineState;
 import net.vulkanmod.vulkan.shader.SPIRVUtils;
+import net.vulkanmod.vulkan.shader.descriptor.ImageDescriptor;
 import net.vulkanmod.vulkan.shader.descriptor.ManualUBO;
+import net.vulkanmod.vulkan.texture.VTextureSelector;
 import net.vulkanmod.vulkan.texture.VulkanImage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -229,6 +232,134 @@ class MultiTargetRenderingTest {
             }
         });
         VRenderSystem.disableCull();
+    }
+
+    /** A texture holding one color, in SHADER_READ_ONLY layout, bound to {@code unit}. */
+    static VulkanImage solidTexture(float r, float g, float b, int unit) {
+        VulkanImage image = target(VK_FORMAT_R8G8B8A8_UNORM);
+        Framebuffer framebuffer = Framebuffer.builder(image, null).build();
+        RenderPass renderPass = RenderPass.builder(framebuffer).build();
+        VRenderSystem.setClearColor(r, g, b, 1.0f);
+        submit(commandBuffer -> {
+            try (MemoryStack stack = stackPush()) {
+                framebuffer.beginRenderPass(commandBuffer, renderPass, stack);
+                renderPass.endRenderPass(commandBuffer);
+                image.readOnlyLayout(stack, commandBuffer);
+            }
+        });
+        VTextureSelector.bindTexture(unit, image);
+        return image;
+    }
+
+    static VulkanImage drawWith(GraphicsPipeline pipeline) {
+        VulkanImage image = target(VK_FORMAT_R8G8B8A8_UNORM);
+        Framebuffer framebuffer = Framebuffer.builder(List.of(image), null).build().setGlLayout(true);
+        draw(framebuffer, RenderPass.builder(framebuffer).build(), pipeline);
+        return image;
+    }
+
+    static int centerPixel(VulkanImage image) {
+        ByteBuffer pixels = readback(image, 4);
+        int pixel = rgba8(pixels, SIZE, SIZE / 2, SIZE / 2);
+        MemoryUtil.memFree(pixels);
+        return pixel;
+    }
+
+    @Test
+    void bindingNumbersMayStartAboveZero() {
+        // shader-pack programs without loose uniforms have no block at binding 0, their samplers start at 1
+        solidTexture(1.0f, 0.0f, 1.0f, 5);
+        Pipeline.Builder builder = new Pipeline.Builder(CustomVertexFormat.NONE);
+        builder.setUniforms(new ArrayList<>(), new ArrayList<>(List.of(new ImageDescriptor(1, "sampler2D", "tex", 5))));
+        builder.setSPIRVs(glsl("test.vsh", FULLSCREEN_TRIANGLE, SPIRVUtils.ShaderKind.VERTEX_SHADER), glsl("test.fsh", """
+                #version 450
+                layout(set = 0, binding = 1) uniform sampler2D tex;
+                layout(location = 0) out vec4 color;
+                void main() { color = texture(tex, vec2(0.5)); }
+                """, SPIRVUtils.ShaderKind.FRAGMENT_SHADER));
+
+        assertEquals(0xFF00FFFF, centerPixel(drawWith(builder.createGraphicsPipeline())));
+    }
+
+    @Test
+    void programsMayHaveAGeometryStage() {
+        Pipeline.Builder builder = new Pipeline.Builder(CustomVertexFormat.NONE);
+        ManualUBO ubo = new ManualUBO(0, VK_SHADER_STAGE_ALL_GRAPHICS, 4);
+        ubo.setSrc(MemoryUtil.memAddress(UNIFORMS), 16);
+        builder.setUniforms(new ArrayList<>(List.of(ubo)), new ArrayList<>());
+        builder.setSPIRVs(glsl("test.vsh", FULLSCREEN_TRIANGLE, SPIRVUtils.ShaderKind.VERTEX_SHADER), glsl("test.fsh", """
+                #version 450
+                layout(location = 0) in vec4 fromGeometry;
+                layout(location = 0) out vec4 color;
+                void main() { color = fromGeometry; }
+                """, SPIRVUtils.ShaderKind.FRAGMENT_SHADER));
+        builder.setGeometrySPIRV(glsl("test.gsh", """
+                #version 450
+                layout(triangles) in;
+                layout(triangle_strip, max_vertices = 3) out;
+                layout(location = 0) out vec4 fromGeometry;
+                void main() {
+                    for (int i = 0; i < 3; i++) { fromGeometry = vec4(0.0, 0.0, 1.0, 1.0); gl_Position = gl_in[i].gl_Position; EmitVertex(); }
+                    EndPrimitive();
+                }
+                """, SPIRVUtils.ShaderKind.GEOMETRY_SHADER));
+
+        assertEquals(0x0000FFFF, centerPixel(drawWith(builder.createGraphicsPipeline())));
+    }
+
+    @Test
+    void vertexAttributesCanBeLocatedByName() {
+        // shader-pack programs get their input locations by name, unrelated to the vertex format's element order
+        Pipeline.Builder builder = new Pipeline.Builder(DefaultVertexFormat.POSITION_COLOR);
+        ManualUBO ubo = new ManualUBO(0, VK_SHADER_STAGE_ALL_GRAPHICS, 4);
+        ubo.setSrc(MemoryUtil.memAddress(UNIFORMS), 16);
+        builder.setUniforms(new ArrayList<>(List.of(ubo)), new ArrayList<>());
+        builder.setAttributeLocations(java.util.Map.of("Position", 2, "Color", 5));
+        builder.setSPIRVs(glsl("test.vsh", """
+                #version 450
+                layout(location = 5) in vec4 Color;
+                layout(location = 2) in vec3 Position;
+                layout(location = 0) out vec4 vertexColor;
+                void main() { vertexColor = Color; gl_Position = vec4(Position, 1.0); }
+                """, SPIRVUtils.ShaderKind.VERTEX_SHADER), glsl("test.fsh", """
+                #version 450
+                layout(location = 0) in vec4 vertexColor;
+                layout(location = 0) out vec4 color;
+                void main() { color = vertexColor; }
+                """, SPIRVUtils.ShaderKind.FRAGMENT_SHADER));
+        GraphicsPipeline pipeline = builder.createGraphicsPipeline();
+
+        // one big triangle, vertices = vec3 position + RGBA8 color (POSITION_COLOR, 16 bytes)
+        ByteBuffer vertices = MemoryUtil.memAlloc(3 * 16).order(java.nio.ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1, 0}, {3, -1, 0}, {-1, 3, 0}};
+        for (float[] p : positions) {
+            vertices.putFloat(p[0]).putFloat(p[1]).putFloat(p[2]).put((byte) 0).put((byte) 0xFF).put((byte) 0xFF).put((byte) 0xFF);
+        }
+        vertices.flip();
+        long[] vertexBuffer = hostBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertices);
+
+        VulkanImage image = target(VK_FORMAT_R8G8B8A8_UNORM);
+        Framebuffer framebuffer = Framebuffer.builder(List.of(image), null).build().setGlLayout(true);
+        RenderPass renderPass = RenderPass.builder(framebuffer).build();
+        VRenderSystem.disableCull();
+        VRenderSystem.disableDepthTest();
+        submit(commandBuffer -> {
+            try (MemoryStack stack = stackPush()) {
+                framebuffer.beginRenderPass(commandBuffer, renderPass, stack);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getHandle(PipelineState.getCurrentPipelineState(renderPass)));
+                pipeline.bindDescriptorSets(commandBuffer, Renderer.getDrawer().getUniformBuffer(), 0);
+                vkCmdSetViewport(commandBuffer, 0, framebuffer.viewport(stack));
+                vkCmdSetScissor(commandBuffer, 0, framebuffer.scissor(stack));
+                vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
+                vkCmdBindVertexBuffers(commandBuffer, 0, stack.longs(vertexBuffer[0]), stack.longs(0));
+                vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+                renderPass.endRenderPass(commandBuffer);
+            }
+        });
+        free(vertexBuffer);
+        MemoryUtil.memFree(vertices);
+
+        assertEquals(0x00FFFFFF, centerPixel(image));
     }
 
     @Test

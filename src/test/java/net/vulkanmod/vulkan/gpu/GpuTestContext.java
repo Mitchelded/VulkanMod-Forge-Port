@@ -120,6 +120,29 @@ final class GpuTestContext {
         }
     }
 
+    /** A host-visible buffer filled with {@code data}; returns {buffer, allocation}. Freed with {@link #free}. */
+    static long[] hostBuffer(int usage, ByteBuffer data) {
+        try (MemoryStack stack = stackPush()) {
+            VkBufferCreateInfo bufferInfo = VkBufferCreateInfo.calloc(stack).sType$Default()
+                    .size(data.remaining()).usage(usage).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
+            VmaAllocationCreateInfo allocationInfo = VmaAllocationCreateInfo.calloc(stack)
+                    .usage(VMA_MEMORY_USAGE_CPU_TO_GPU).flags(VMA_ALLOCATION_CREATE_MAPPED_BIT);
+            LongBuffer pBuffer = stack.mallocLong(1);
+            PointerBuffer pAllocation = stack.mallocPointer(1);
+            VmaAllocationInfo info = VmaAllocationInfo.calloc(stack);
+            if (vmaCreateBuffer(Vulkan.getAllocator(), bufferInfo, allocationInfo, pBuffer, pAllocation, info) != VK_SUCCESS) {
+                throw new IllegalStateException("host buffer");
+            }
+            MemoryUtil.memCopy(MemoryUtil.memAddress(data), info.pMappedData(), data.remaining());
+            vmaFlushAllocation(Vulkan.getAllocator(), pAllocation.get(0), 0, VK_WHOLE_SIZE);
+            return new long[]{pBuffer.get(0), pAllocation.get(0)};
+        }
+    }
+
+    static void free(long[] buffer) {
+        vmaDestroyBuffer(Vulkan.getAllocator(), buffer[0], buffer[1]);
+    }
+
     /** RGBA8 pixel at (x, row) as 0xRRGGBBAA. Row 0 is the first row in memory. */
     static int rgba8(ByteBuffer pixels, int width, int x, int row) {
         int i = (row * width + x) * 4;
