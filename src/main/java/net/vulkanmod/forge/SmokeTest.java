@@ -131,6 +131,21 @@ public final class SmokeTest {
             fail("timeout after " + seconds + " s waiting for " + what + " " + diag(Minecraft.getInstance()));
     }
 
+    private int lastWorldDiag;
+
+    /** What the chunk renderer sees: camera, loaded client chunks, built/queued sections, frame rate. */
+    private static String worldDiag(Minecraft mc) {
+        var camera = mc.gameRenderer.getMainCamera();
+        var cameraBlock = mc.level.getBlockState(camera.getBlockPosition());
+        return "camera " + camera.getBlockPosition().toShortString() + " in " + cameraBlock.getBlock()
+                + ", client chunks " + mc.level.getChunkSource().getLoadedChunksCount()
+                + ", render distance " + mc.options.getEffectiveRenderDistance()
+                + ", " + net.vulkanmod.render.chunk.WorldRenderer.getInstance().getChunkStatistics()
+                + ", " + net.vulkanmod.render.chunk.ChunkStatusMap.INSTANCE.getStatistics()
+                + ", visible " + mc.levelRenderer.countRenderedChunks()
+                + ", fps " + mc.getFps();
+    }
+
     private static String diag(Minecraft mc) {
         return "(screen " + (mc.screen != null ? mc.screen.getClass().getName() : "null")
                 + ", overlay " + (mc.getOverlay() != null ? mc.getOverlay().getClass().getName() : "null")
@@ -214,6 +229,9 @@ public final class SmokeTest {
                 double seconds = Double.parseDouble(prop("worldSeconds", "20"));
                 if (!commandsSent && elapsed() > 2) {
                     commandsSent = true;
+                    String teleport = prop("teleport", "");
+                    if (!teleport.isEmpty())
+                        mc.player.connection.sendCommand("tp @s " + teleport);
                     mc.player.connection.sendCommand("time set 1000");
                     mc.player.connection.sendCommand("gamerule doDaylightCycle false");
                     mc.player.connection.sendCommand("summon minecraft:pig ^1 ^ ^4");
@@ -222,6 +240,10 @@ public final class SmokeTest {
                     mc.options.renderDebug = Boolean.parseBoolean(prop("f3", "true"));
                     pass("commands sent (entities summoned)");
                 }
+                if ((int) (elapsed() / 5) > lastWorldDiag) {
+                    lastWorldDiag = (int) (elapsed() / 5);
+                    Initializer.LOGGER.info("[SMOKE] in world {} s: {}", lastWorldDiag * 5, worldDiag(mc));
+                }
                 if (!screenshotTaken && elapsed() > seconds * 0.75) {
                     screenshotTaken = true;
                     Screenshot.grab(gameDir.toFile(), "vulkanmod-smoketest.png", mc.getMainRenderTarget(),
@@ -229,8 +251,12 @@ public final class SmokeTest {
                     pass("screenshot requested via Vulkan read-back");
                 }
                 if (elapsed() > seconds) {
+                    int minSections = Integer.parseInt(prop("minVisibleSections", "0"));
                     if (framesInState() < seconds * 5)
                         fail("only " + framesInState() + " frames in " + seconds + " s in world");
+                    else if (mc.levelRenderer.countRenderedChunks() < minSections)
+                        fail("only " + mc.levelRenderer.countRenderedChunks() + " sections visible after " + seconds
+                                + " s in world (expected at least " + minSections + "): " + worldDiag(mc));
                     else
                         next(State.LEAVE, "stayed in world " + seconds + " s, " + framesInState() + " frames, "
                                 + mc.levelRenderer.countRenderedChunks() + " sections visible, "

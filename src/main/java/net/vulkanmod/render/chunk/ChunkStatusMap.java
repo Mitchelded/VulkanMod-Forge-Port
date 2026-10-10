@@ -33,6 +33,17 @@ public class ChunkStatusMap {
         this.map = resized;
     }
 
+    /** Diagnostics: how many tracked chunks have data, light and ready neighbours. */
+    public String getStatistics() {
+        int data = 0, light = 0, neighbours = 0;
+        for (byte flags : this.map.values()) {
+            if ((flags & DATA_READY) != 0) data++;
+            if ((flags & LIGHT_READY) != 0) light++;
+            if ((flags & NEIGHBOURS_READY) != 0) neighbours++;
+        }
+        return String.format("status map %d: data %d, light %d, neighbours %d", this.map.size(), data, light, neighbours);
+    }
+
     public void setChunkStatus(int x, int z, byte flag) {
         long l = ChunkPos.asLong(x, z);
 
